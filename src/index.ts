@@ -7,6 +7,7 @@ import { runDoctor } from "@/api/doctor";
 import { formatHeadless, runHeadless } from "@/api/headless";
 import { startRepl } from "@/api/repl";
 import { runSelector } from "@/api/selector";
+import { detectTheme } from "@/api/theming";
 import { loadConfig } from "@/config";
 import { checkPermission } from "@/domain/permissions";
 import { matchRouting } from "@/domain/routing";
@@ -106,11 +107,17 @@ async function main(): Promise<number> {
     case "headless": {
       try {
         const council = buildCouncil(app, args, [], "council");
+        if (council !== undefined) {
+          const detected = detectTheme(process.env);
+          council.theme = detected.theme;
+          council.color = detected.color;
+        }
         const result = await runHeadless(
           app,
           args,
           (line) => process.stdout.write(`${line}\n`),
           council,
+          { notify: args.notify },
         );
         process.stdout.write(`${formatHeadless(result, args)}\n`);
         return 0;
@@ -155,6 +162,7 @@ async function main(): Promise<number> {
         const exit = await maybePassthrough(config.defaultModel, app, args.passthrough);
         if (exit !== undefined) return exit;
       }
+      const detected = detectTheme(process.env);
       return startRepl(app, {
         resume: args.resume,
         continueLatest: args.continueLatest,
@@ -164,6 +172,9 @@ async function main(): Promise<number> {
         councilMode: council?.mode,
         councilLead: council?.lead,
         editor: resolveEditor(process.env),
+        theme: detected.theme,
+        color: detected.color,
+        notify: args.notify,
       });
     }
   }
@@ -235,10 +246,12 @@ async function cmdConfig(app: FlowApp, rest: string[]): Promise<number> {
 }
 
 main()
-  .then((code) => process.exit(code))
+  .then((code) => {
+    process.exitCode = code;
+  })
   .catch((err: unknown) => {
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 
 async function askYesNo(question: string): Promise<boolean> {

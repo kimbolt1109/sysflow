@@ -6,6 +6,7 @@ import { parseArgv } from "@/api/cli";
 import { formatHeadless, runHeadless } from "@/api/headless";
 import { createApp } from "@/app";
 import { loadConfig } from "@/config";
+import type { Driver } from "@/domain/drivers";
 import { matchRouting } from "@/domain/routing";
 import { MockDriver } from "@/infrastructure/mockDriver";
 
@@ -67,5 +68,29 @@ describe("cli integration", () => {
 
     expect((await app.tools.write("note.txt", "hello")).ok).toBe(true);
     expect((await app.tools.read("note.txt")).output).toBe("hello");
+  });
+
+  it("records usage cost and enforces --max-cost", async () => {
+    const config = loadConfig({ APP_DATA_DIR: data, APP_LOG_LEVEL: "error" }, { cwd: proj });
+    config.defaultModel = "anthropic/claude-sonnet";
+    const pricey: Driver = {
+      ...new MockDriver("mock/big"),
+      sendMessage: async () => ({ text: "big", usage: { input: 1_000_000, output: 0 } }),
+      streamMessage: async () => ({ text: "big", usage: { input: 1_000_000, output: 0 } }),
+    };
+    const app = createApp(config, { driver: pricey });
+
+    const result = await runHeadless(app, parseArgv(["-p", "hi"]), () => {}, undefined, {
+      notify: false,
+    });
+
+    expect(result.cost).toBeCloseTo(3);
+    expect(app.dailyUsage().providers[Object.keys(app.dailyUsage().providers)[0] as string]?.cost).toBeCloseTo(3);
+
+    await expect(
+      runHeadless(app, parseArgv(["-p", "hi", "--max-cost", "1"]), () => {}, undefined, {
+        notify: false,
+      }),
+    ).rejects.toThrow("exceeded --max-cost");
   });
 });

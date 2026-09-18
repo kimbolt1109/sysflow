@@ -63,7 +63,7 @@ export function saveLastSelection(app: FlowApp, selection: Selection): void {
   writeFileSync(lastSelectionPath(app), `${JSON.stringify(selection)}\n`, "utf8");
 }
 
-function printModels(models: ModelInfo[]): void {
+function printModels(models: ModelInfo[], quotas: Map<string, string>): void {
   const byProvider = new Map<string, ModelInfo[]>();
   for (const m of models) {
     const group = byProvider.get(m.provider) ?? [];
@@ -76,7 +76,7 @@ function printModels(models: ModelInfo[]): void {
     for (const m of group) {
       n += 1;
       process.stdout.write(
-        `  ${n}. ${m.id} | ctx ${m.contextWindow} | $${m.inputPricePerM}/$${m.outputPricePerM} per 1M | quota — (M7) | ${m.tags.join(",")}\n`,
+        `  ${n}. ${m.id} | ctx ${m.contextWindow} | $${m.inputPricePerM}/$${m.outputPricePerM} per 1M | quota ${quotas.get(m.id) ?? "—"} | ${m.tags.join(",")}\n`,
       );
     }
   }
@@ -95,9 +95,27 @@ export async function runSelector(
   preMode?: OrchestrationMode,
 ): Promise<Selection> {
   const last = loadLastSelection(app);
-  printModels(app.config.models);
-
   const flat = app.config.models;
+  const quotas = new Map<string, string>();
+  await Promise.all(
+    flat.map(async (m) => {
+      try {
+        const quota = await app.quotaFor(m.id);
+        quotas.set(
+          m.id,
+          quota.limit !== undefined && quota.limit > 0
+            ? `${quota.requestsToday}/${quota.limit}`
+            : quota.requestsToday > 0
+              ? `${quota.requestsToday} req`
+              : "—",
+        );
+      } catch {
+        quotas.set(m.id, "—");
+      }
+    }),
+  );
+  printModels(app.config.models, quotas);
+
   let models: string[];
   if (preselected !== undefined && preselected.length > 0) {
     models = preselected;

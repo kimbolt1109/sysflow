@@ -1,21 +1,8 @@
 import type { FlowApp } from "@/app";
+import { renderDoctor } from "@/domain/doctor";
 
-export function runDoctor(app: FlowApp): number {
-  process.stdout.write(`ok    node: ${process.version}\n`);
-  process.stdout.write(`ok    storage: ${app.sessions.dir()}\n`);
-  const auth: Array<[string, boolean]> = [
-    ["anthropic", app.config.auth.anthropic !== undefined],
-    ["openai", app.config.auth.openai !== undefined],
-    ["google", app.config.auth.google !== undefined],
-    ["openrouter", app.config.auth.openrouter !== undefined],
-  ];
-  for (const [provider, present] of auth) {
-    process.stdout.write(
-      present
-        ? `ok    ${provider}-auth: key present\n`
-        : `warn  ${provider}-auth: missing (mock/CLI drivers)\n`,
-    );
-  }
-  process.stdout.write("ok    ollama: local endpoint (degrades gracefully offline)\n");
-  return 0;
+export async function runDoctor(app: FlowApp): Promise<number> {
+  const { text, failed } = renderDoctor(await app.diagnose());
+  process.stdout.write(`${text}\n`);
+  return failed ? 1 : 0;
 }

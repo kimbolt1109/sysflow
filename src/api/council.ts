@@ -8,12 +8,12 @@ import {
   type CouncilEvent,
   type Orchestrant,
 } from "@/domain/orchestrator";
+import { badgeWith, THEMES, type Theme } from "@/api/theming";
 
-const COLORS = ["36", "35", "32", "33", "34", "31"];
+const DEFAULT_THEME = THEMES[0] as Theme;
 
 export function badge(name: string, index: number): string {
-  const color = COLORS[index % COLORS.length] ?? "37";
-  return `\x1b[${color}m[${name}]\x1b[0m`;
+  return badgeWith(DEFAULT_THEME, true, name, index);
 }
 
 export function phaseLine(phase: string): string {
@@ -31,11 +31,17 @@ export class CouncilSession {
   lead?: string;
   mode: OrchestrationMode = "council";
   rounds = 1;
+  theme: Theme = DEFAULT_THEME;
+  color = true;
 
   constructor(
     readonly agents: Orchestrant[],
     private readonly appendRecord: (record: unknown) => void = () => {},
   ) {}
+
+  private tag(name: string): string {
+    return badgeWith(this.theme, this.color, name, this.names().indexOf(name));
+  }
 
   names(): string[] {
     return this.agents.map((a) => a.name);
@@ -46,8 +52,8 @@ export class CouncilSession {
       case "agents":
         return this.names()
           .map(
-            (n, i) =>
-              `${badge(n, i)}${this.muted.has(n) ? " (muted)" : ""}${this.lead === n ? " (lead)" : ""}${this.stopped.has(n) ? " (stopped)" : ""}`,
+            (n) =>
+              `${this.tag(n)}${this.muted.has(n) ? " (muted)" : ""}${this.lead === n ? " (lead)" : ""}${this.stopped.has(n) ? " (stopped)" : ""}`,
           )
           .join(" ");
       case "mute":
@@ -105,8 +111,7 @@ export class CouncilSession {
     if (live.length === 0) throw new Error("all agents muted or stopped");
     const show = (event: CouncilEvent): void => {
       const agent = event.agent ?? "";
-      const index = this.names().indexOf(agent);
-      const who = agent === "" ? "" : `${badge(agent, index < 0 ? 0 : index)} `;
+      const who = agent === "" ? "" : `${this.tag(agent)} `;
       emit(`${phaseLine(event.phase)} ${who}${event.message}`);
       save({ type: "council-event", phase: event.phase, agent, message: event.message });
     };
@@ -141,6 +146,8 @@ export class CouncilSession {
       nested.mode = mode;
       nested.rounds = this.rounds;
       nested.lead = this.lead;
+      nested.theme = this.theme;
+      nested.color = this.color;
       for (const name of this.muted) nested.muted.add(name);
       for (const name of this.stopped) nested.stopped.add(name);
       return nested.run(task, emit);

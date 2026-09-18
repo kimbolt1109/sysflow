@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelInfo, RoutingRule } from "@/domain/models";
+import { DEFAULT_THRESHOLDS, type BudgetThresholds } from "@/domain/quota";
 
 export interface FlowAuth {
   anthropic?: string;
@@ -20,6 +21,7 @@ export interface Config {
   dailyBudget: number;
   maxCost: number;
   compactThreshold: number;
+  quotaThresholds: BudgetThresholds;
   ollamaBaseUrl: string;
   auth: FlowAuth;
 }
@@ -87,6 +89,7 @@ const BUILTIN_ROUTING: RoutingRule[] = [
 interface FlowJson {
   models?: ModelInfo[];
   routing?: RoutingRule[];
+  quotas?: { warnAt?: unknown; amberAt?: unknown; confirmAt?: unknown };
 }
 
 function readJsonFile(path: string): unknown | undefined {
@@ -104,7 +107,26 @@ function asFlowJson(value: unknown): FlowJson {
   const out: FlowJson = {};
   if (Array.isArray(record.models)) out.models = record.models as ModelInfo[];
   if (Array.isArray(record.routing)) out.routing = record.routing as RoutingRule[];
+  if (typeof record.quotas === "object" && record.quotas !== null) {
+    out.quotas = record.quotas as FlowJson["quotas"];
+  }
   return out;
+}
+
+function fraction(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value >= 1) {
+    return fallback;
+  }
+  return value;
+}
+
+function thresholdsOf(quotas: FlowJson["quotas"]): BudgetThresholds {
+  if (quotas === undefined) return DEFAULT_THRESHOLDS;
+  return {
+    warn: fraction(quotas.warnAt, DEFAULT_THRESHOLDS.warn),
+    amber: fraction(quotas.amberAt, DEFAULT_THRESHOLDS.amber),
+    confirm: fraction(quotas.confirmAt, DEFAULT_THRESHOLDS.confirm),
+  };
 }
 
 function positiveNumber(raw: string | undefined, name: string, fallback: number): number {
@@ -133,11 +155,17 @@ export function loadConfig(
 
   let models = BUILTIN_MODELS;
   let routing = BUILTIN_ROUTING;
+  let quotas = DEFAULT_THRESHOLDS;
   for (const candidate of candidates) {
     const parsed = asFlowJson(readJsonFile(candidate));
-    if (parsed.models !== undefined || parsed.routing !== undefined) {
+    if (
+      parsed.models !== undefined ||
+      parsed.routing !== undefined ||
+      parsed.quotas !== undefined
+    ) {
       if (parsed.models !== undefined && parsed.models.length > 0) models = parsed.models;
       if (parsed.routing !== undefined && parsed.routing.length > 0) routing = parsed.routing;
+      quotas = thresholdsOf(parsed.quotas);
       break;
     }
   }
@@ -175,6 +203,7 @@ export function loadConfig(
     dailyBudget: positiveNumber(env.APP_DAILY_BUDGET, "APP_DAILY_BUDGET", 0),
     maxCost: positiveNumber(env.APP_MAX_COST, "APP_MAX_COST", 0),
     compactThreshold,
+    quotaThresholds: quotas,
     ollamaBaseUrl:
       env.APP_OLLAMA_BASE_URL && env.APP_OLLAMA_BASE_URL !== ""
         ? env.APP_OLLAMA_BASE_URL

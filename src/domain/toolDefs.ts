@@ -10,6 +10,7 @@ export interface ToolsPort {
   chdir(path: string): void;
   read(path: string): Promise<ToolResult>;
   write(path: string, content: string): Promise<ToolResult>;
+  remove(path: string): Promise<ToolResult>;
   edit(
     path: string,
     oldString: string,

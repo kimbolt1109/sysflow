@@ -1,5 +1,5 @@
 import { exec, type ExecException } from "node:child_process";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import type { ToolResult, ToolsPort } from "@/domain/toolDefs";
@@ -95,6 +95,16 @@ export class LocalTools implements ToolsPort {
       return { ok: true, output: `wrote ${path} (${content.length} chars)` };
     } catch (err) {
       return fail(`write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async remove(path: string): Promise<ToolResult> {
+    try {
+      const full = this.resolveInRoot(path);
+      await rm(full, { force: true, recursive: true });
+      return { ok: true, output: `removed ${path}` };
+    } catch (err) {
+      return fail(`remove failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

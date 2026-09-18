@@ -1,25 +1,41 @@
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import type { Config } from "@/config";
 import type { CustomCommand } from "@/domain/commands";
+import type { DoctorCheck } from "@/domain/doctor";
 import type { Driver } from "@/domain/drivers";
 import type { HooksPort } from "@/domain/hooks";
 import type { McpPort } from "@/domain/mcp";
+import type { QuotaInfo } from "@/domain/models";
 import { buildMemoryBlock } from "@/domain/memory";
+import type { Checkpoint } from "@/domain/checkpoints";
+import { takeCheckpoint as takeCheckpointData } from "@/domain/checkpoints";
 import type { PermissionRule } from "@/domain/permissions";
+import { budgetLevel, costFor, type BudgetLevel } from "@/domain/quota";
+import { findModel } from "@/domain/modelRegistry";
 import { matchRouting } from "@/domain/routing";
 import type { SkillDef } from "@/domain/skills";
 import type { SubagentDef } from "@/domain/subagents";
 import type { ToolsPort } from "@/domain/toolDefs";
 import { runToolLoop, TOOL_SYSTEM, type ToolCheck } from "@/infrastructure/agentLoop";
-import { CliDriver, findOnPath } from "@/infrastructure/cliDrivers";
+import {
+  checkpointDir,
+  listCheckpoints,
+  restoreCheckpoint,
+  saveCheckpoint,
+  snapshotWorkspace,
+} from "@/infrastructure/checkpointStore";
+import { CliDriver, cliVersion, findOnPath } from "@/infrastructure/cliDrivers";
 import { discoverCommands } from "@/infrastructure/commandStore";
 import { DriverAgent } from "@/infrastructure/driverAgent";
 import { HookRunner, loadHooks } from "@/infrastructure/hookRunner";
+import { probeKeychain } from "@/infrastructure/keychain";
 import { LocalTools } from "@/infrastructure/localTools";
 import { loadMcpConfig, McpPool } from "@/infrastructure/mcpClients";
+import { notify } from "@/infrastructure/notifier";
 import {
   findLegacyImport,
   importOfferedMarker,
@@ -38,6 +54,12 @@ import { SessionStore } from "@/infrastructure/sessionStore";
 import { discoverSkills, loadSkillBody } from "@/infrastructure/skillStore";
 import { discoverSubagents } from "@/infrastructure/subagentStore";
 import { loadPermissionRules, saveRule } from "@/infrastructure/permissionStore";
+import {
+  dailyTotals,
+  loadDailyUsage,
+  recordProviderUsage,
+  type DailyUsage,
+} from "@/infrastructure/usageStore";
 import { createLogger, type Logger } from "@/lib/logger";
 
 export interface MemoryFile {
@@ -67,6 +89,20 @@ export interface FlowApp {
   savePermissionRule(rule: PermissionRule): void;
   editPath(path: string, editor: string): void;
   runSubagent(name: string, prompt: string, emit?: (text: string) => void): Promise<string>;
+  recordUsage(provider: string, modelId: string, input: number, output: number): UsageRecord;
+  dailyUsage(): DailyUsage;
+  quotaFor(modelId: string): Promise<QuotaInfo>;
+  notifyUser(title: string, body: string): void;
+  takeCheckpoint(sessionId: string, label: string): Promise<Checkpoint>;
+  listCheckpoints(sessionId: string): Checkpoint[];
+  restoreCheckpoint(sessionId: string, id: string): Promise<string[]>;
+  diagnose(): Promise<DoctorCheck[]>;
+}
+
+export interface UsageRecord {
+  cost: number;
+  dailyCost: number;
+  level: BudgetLevel;
 }
 
 function nativeDriverFor(config: Config, fetchFn?: typeof fetch): Driver | undefined {
@@ -208,6 +244,42 @@ export function createApp(
     },
     runSubagent: (name, prompt, emit) =>
       runSubagentTask({ driver, tools, subagents, mcp }, name, prompt, emit),
+    dailyUsage: () => loadDailyUsage(config.dataDir),
+    recordUsage: (provider, modelId, input, output) =>
+      recordUsage(config, provider, modelId, input, output),
+    quotaFor: async (modelId) => {
+      try {
+        return await createDriverFor(config, modelId).getQuota();
+      } catch {
+        return {
+          provider: modelId.split("/")[0] ?? "unknown",
+          requestsToday: 0,
+          tokensToday: 0,
+          costToday: 0,
+          estimated: true,
+        };
+      }
+    },
+    notifyUser: (title, body) => {
+      notify(title, body);
+    },
+    takeCheckpoint: async (sessionId, label) => {
+      const snap = await snapshotWorkspace(tools, label);
+      const entries = Object.entries(snap.files).map(([path, content]) => ({ path, content }));
+      const checkpoint = takeCheckpointData(randomUUID(), snap.label, entries);
+      const dir = checkpointDir(config.dataDir, config.projectDir, sessionId);
+      saveCheckpoint(dir, checkpoint);
+      return checkpoint;
+    },
+    listCheckpoints: (sessionId) =>
+      listCheckpoints(checkpointDir(config.dataDir, config.projectDir, sessionId)),
+    restoreCheckpoint: async (sessionId, id) => {
+      const dir = checkpointDir(config.dataDir, config.projectDir, sessionId);
+      const checkpoint = listCheckpoints(dir).find((c) => c.id === id || c.id.startsWith(id));
+      if (checkpoint === undefined) throw new Error(`unknown checkpoint "${id}"`);
+      return restoreCheckpoint(tools, checkpoint);
+    },
+    diagnose: () => diagnose(config, sessions, mcp),
   };
   return app;
 }
@@ -270,4 +342,93 @@ function existsMarker(projectDir: string): boolean {
 function writeMarker(projectDir: string): void {
   mkdirSync(join(projectDir, ".flow"), { recursive: true });
   writeFileSync(importOfferedMarker(projectDir), "offered\n", "utf8");
+}
+
+function recordUsage(
+  config: Config,
+  provider: string,
+  modelId: string,
+  input: number,
+  output: number,
+): { cost: number; dailyCost: number; level: BudgetLevel } {
+  const cost = costFor(findModel(config.models, modelId), { input, output });
+  const daily = recordProviderUsage(config.dataDir, provider, input, output, cost);
+  const dailyCost = dailyTotals(daily).cost;
+  const level = budgetLevel(dailyCost, config.dailyBudget, config.quotaThresholds);
+  if (level !== "ok") {
+    process.stderr.write(`[quota] daily spend $${dailyCost.toFixed(2)} hit ${level} level\n`);
+  }
+  return { cost, dailyCost, level };
+}
+
+async function probeNetwork(): Promise<{ ok: boolean; detail: string }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  if (typeof timer === "object" && typeof timer.unref === "function") timer.unref();
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/models", {
+      method: "GET",
+      signal: ctrl.signal,
+    });
+    await res.arrayBuffer().then((b) => b.byteLength);
+    return { ok: true, detail: "https reachable" };
+  } catch {
+    return { ok: false, detail: "no https route to providers" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function diagnose(
+  config: Config,
+  sessions: SessionStore,
+  mcp: McpPort,
+): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  checks.push({ name: "node", ok: true, detail: process.version });
+  try {
+    mkdirSync(sessions.dir(), { recursive: true });
+    writeFileSync(join(sessions.dir(), ".probe"), "ok", "utf8");
+    checks.push({ name: "storage", ok: true, detail: sessions.dir() });
+  } catch {
+    checks.push({ name: "storage", ok: false, detail: `unwritable: ${sessions.dir()}` });
+  }
+  const auth: Array<[string, boolean]> = [
+    ["anthropic", config.auth.anthropic !== undefined],
+    ["openai", config.auth.openai !== undefined],
+    ["google", config.auth.google !== undefined],
+    ["openrouter", config.auth.openrouter !== undefined],
+  ];
+  for (const [provider, present] of auth) {
+    checks.push({
+      name: `${provider}-auth`,
+      ok: present,
+      warn: !present,
+      detail: present ? "key present" : "missing (mock/CLI drivers)",
+    });
+  }
+  const seen = new Set<string>();
+  for (const rule of config.routing) {
+    if (rule.driver !== "cli" || rule.command === undefined || seen.has(rule.command)) continue;
+    seen.add(rule.command);
+    const version = cliVersion(rule.command);
+    checks.push({
+      name: `cli:${rule.command}`,
+      ok: version !== undefined,
+      warn: version === undefined,
+      detail: version ?? "not on PATH",
+    });
+  }
+  const network = await probeNetwork();
+  checks.push({ name: "network", ok: network.ok, warn: !network.ok, detail: network.detail });
+  checks.push({ name: "mcp", ok: true, detail: `${mcp.servers.length} servers` });
+  const keychain = probeKeychain();
+  checks.push({ name: "keychain", ok: keychain.ok, warn: !keychain.ok, detail: keychain.detail });
+  checks.push({
+    name: "ollama",
+    ok: true,
+    warn: true,
+    detail: "local endpoint (degrades gracefully offline)",
+  });
+  return checks;
 }

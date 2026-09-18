@@ -143,6 +143,11 @@ export async function runWriteTool(
     if (!(await confirmTool(app, rl, sessionId, mode, rules, tool, { path }, path ?? ""))) {
       return "continue";
     }
+    try {
+      await app.takeCheckpoint(sessionId, `before ${cmd} ${path ?? ""}`);
+    } catch {
+      // checkpoints are best-effort and never block execution
+    }
     if (cmd === "write") {
       const result = await app.tools.write(path ?? "", contentParts.join(" "));
       process.stdout.write(`${result.output}\n`);
