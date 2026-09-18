@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FlowApp } from "@/app";
 import type { CliArgs } from "@/api/cli";
+import type { CouncilSession } from "@/api/council";
 import type { ChatMessage } from "@/domain/models";
 
 export interface HeadlessResult {
@@ -15,11 +16,26 @@ export async function runHeadless(
   app: FlowApp,
   args: CliArgs,
   emit: (line: string) => void = () => {},
+  council?: CouncilSession,
 ): Promise<HeadlessResult> {
   const prompt = args.prompt ?? "";
   if (prompt.trim() === "") throw new Error('headless mode needs -p "task"');
   const model = args.model ?? app.config.defaultModel;
   const sessionId = randomUUID();
+
+  if (council !== undefined) {
+    app.sessions.append(sessionId, { type: "headless-start", prompt, model, mode: council.mode });
+    const run = await council.run(prompt, emit);
+    for (const record of run.sessionRecords) app.sessions.append(sessionId, record);
+    return {
+      text: run.text,
+      model,
+      sessionId,
+      inputTokens: app.driver.countTokens(prompt),
+      outputTokens: app.driver.countTokens(run.text),
+    };
+  }
+
   const messages: ChatMessage[] = [{ role: "user", content: prompt }];
   app.sessions.append(sessionId, { type: "headless-start", prompt, model });
 

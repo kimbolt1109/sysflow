@@ -1,6 +1,8 @@
 import type { Config } from "@/config";
 import type { Driver } from "@/domain/drivers";
 import { matchRouting } from "@/domain/routing";
+import type { ToolCheck } from "@/infrastructure/agentLoop";
+import { DriverAgent } from "@/infrastructure/driverAgent";
 import { LocalTools } from "@/infrastructure/localTools";
 import { MockDriver } from "@/infrastructure/mockDriver";
 import { AnthropicDriver } from "@/infrastructure/nativeAnthropic";
@@ -43,6 +45,24 @@ function nativeDriverFor(config: Config, fetchFn?: typeof fetch): Driver | undef
     return createOllamaDriver(config.defaultModel, config.ollamaBaseUrl, fetchFn);
   }
   return undefined;
+}
+
+export function createDriverFor(config: Config, modelId: string, fetchFn?: typeof fetch): Driver {
+  const scoped: Config = { ...config, defaultModel: modelId };
+  return (
+    nativeDriverFor(scoped, fetchFn) ??
+    new MockDriver(`${modelId} (mock: no key, M6 adds CLI passthrough)`)
+  );
+}
+
+export function createDriverAgents(
+  app: FlowApp,
+  modelIds: string[],
+  check: ToolCheck,
+): DriverAgent[] {
+  return modelIds.map(
+    (id) => new DriverAgent(id, createDriverFor(app.config, id), app.tools, check),
+  );
 }
 
 export function createApp(

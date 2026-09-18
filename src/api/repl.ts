@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import type { FlowApp } from "@/app";
 import { helpText } from "@/api/cli";
+import { CouncilSession } from "@/api/council";
 import { runDoctor } from "@/api/doctor";
-import type { ChatMessage } from "@/domain/models";
+import type { ChatMessage, OrchestrationMode } from "@/domain/models";
 import { findCommand } from "@/domain/commands";
 import { compactHistory } from "@/domain/compaction";
 import { findModel } from "@/domain/modelRegistry";
+import type { Orchestrant } from "@/domain/orchestrator";
 import { checkPermission, parseRule } from "@/domain/permissions";
 import type { PermissionMode, PermissionRule } from "@/domain/permissions";
 import { sessionPreview } from "@/domain/sessions";
@@ -19,6 +21,9 @@ export interface ReplOptions {
   continueLatest: boolean;
   permissionMode?: PermissionMode;
   dangerouslySkip: boolean;
+  agents?: Orchestrant[];
+  councilMode?: OrchestrationMode;
+  councilLead?: string;
 }
 
 function toolLabel(name: ToolName): string {
@@ -41,6 +46,14 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
   const rules = loadPermissionRules(app.config.dataDir, app.config.projectDir);
   let sessionId = resolveSession(app, opts);
   const history: ChatMessage[] = loadHistory(app, sessionId);
+  const council =
+    opts.agents !== undefined && opts.agents.length > 0
+      ? new CouncilSession(opts.agents, (record) => app.sessions.append(sessionId, record))
+      : undefined;
+  if (council !== undefined) {
+    if (opts.councilMode !== undefined) council.mode = opts.councilMode;
+    if (opts.councilLead !== undefined) council.lead = opts.councilLead;
+  }
   app.sessions.append(sessionId, { type: "session-start", mode, model: app.driver.id });
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "flow> " });
@@ -65,6 +78,11 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
   process.stdout.write(
     `flow · ${app.driver.id} · session ${sessionId.slice(0, 8)} · /help for commands\n`,
   );
+  if (council !== undefined) {
+    process.stdout.write(
+      `council: ${council.names().join(", ")} · mode=${council.mode} · Esc interjects, @agent DMs\n`,
+    );
+  }
   rl.prompt();
   for await (const line of rl) {
     const input = line.trim();
@@ -78,11 +96,16 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
       continue;
     }
     if (input.startsWith("/")) {
-      const done = await runSlash(app, rl, sessionId, history, mode, rules, input);
+      const done = await runSlash(app, rl, sessionId, history, mode, rules, council, input);
       if (done === "exit") {
         rl.close();
         return 0;
       }
+      rl.prompt();
+      continue;
+    }
+    if (council !== undefined) {
+      await runCouncilTurn(app, council, sessionId, history, input);
       rl.prompt();
       continue;
     }
@@ -117,6 +140,31 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
     rl.prompt();
   }
   return 0;
+}
+
+async function runCouncilTurn(
+  app: FlowApp,
+  council: CouncilSession,
+  sessionId: string,
+  history: ChatMessage[],
+  input: string,
+): Promise<void> {
+  const dm = input.match(/^@(\S+)\s+([\s\S]+)$/);
+  const task = dm !== null ? `[direct message for ${dm[1]}] ${dm[2]}` : input;
+  history.push({ role: "user", content: input });
+  app.sessions.append(sessionId, { type: "user", text: input });
+  try {
+    const run = await council.run(task, (line) => process.stdout.write(`${line}\n`));
+    process.stdout.write(`${run.text}\n`);
+    history.push({ role: "assistant", content: run.text });
+    app.sessions.append(sessionId, { type: "assistant", text: run.text });
+    if (maybeCompact(app, sessionId, history)) {
+      process.stdout.write("[auto-compact: transcript summarized, recent window kept]\n");
+    }
+  } catch (err) {
+    process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+    app.sessions.append(sessionId, { type: "error", message: String(err) });
+  }
 }
 
 function contextWindowOf(app: FlowApp): number {
@@ -246,6 +294,7 @@ async function runSlash(
   history: ChatMessage[],
   mode: PermissionMode,
   rules: PermissionRule[],
+  council: CouncilSession | undefined,
   input: string,
 ): Promise<"exit" | "continue"> {
   const [cmd, ...rest] = input.slice(1).split(/\s+/);
@@ -328,6 +377,26 @@ async function runSlash(
       return "continue";
     case "doctor":
       runDoctor(app);
+      return "continue";
+    case "agents":
+      if (council === undefined) {
+        process.stdout.write("solo session — start with --agents a,b for a council.\n");
+        return "continue";
+      }
+      process.stdout.write(`${council.interject("agents", "")}\n`);
+      return "continue";
+    case "mute":
+    case "unmute":
+    case "promote":
+    case "handoff":
+    case "mode":
+    case "round":
+    case "stop-agent":
+      if (council === undefined) {
+        process.stdout.write(`/${cmd} needs a council — start with --agents a,b.\n`);
+        return "continue";
+      }
+      process.stdout.write(`${council.interject(cmd, arg)}\n`);
       return "continue";
     case "read":
     case "glob":
