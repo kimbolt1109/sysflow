@@ -1,0 +1,14 @@
+{
+  "id": "session-1789708895393",
+  "startedAt": "2026-09-18T05:21:35.393Z",
+  "cwd": "C:\\Side projects\\Flow",
+  "context": {},
+  "metrics": {
+    "edits": 0,
+    "commands": 0,
+    "tasks": 0,
+    "errors": 0
+  },
+  "endedAt": "2026-09-18T05:21:41.096Z",
+  "duration": 5705
+}

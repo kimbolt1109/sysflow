@@ -9,8 +9,10 @@ import { startRepl } from "@/api/repl";
 import { runSelector } from "@/api/selector";
 import { loadConfig } from "@/config";
 import { checkPermission } from "@/domain/permissions";
+import { matchRouting } from "@/domain/routing";
 import { sessionPreview } from "@/domain/sessions";
 import type { ToolCheck } from "@/infrastructure/agentLoop";
+import { findOnPath, passthrough } from "@/infrastructure/cliDrivers";
 import { removeMcpServer, saveMcpServer } from "@/infrastructure/mcpClients";
 import { resolveEditor } from "@/infrastructure/memoryStore";
 import { loadPermissionRules } from "@/infrastructure/permissionStore";
@@ -149,6 +151,10 @@ async function main(): Promise<number> {
         councilModels.length > 1
           ? buildCouncil(app, args, councilModels, councilMode ?? "council", councilLead)
           : undefined;
+      if (council === undefined) {
+        const exit = await maybePassthrough(config.defaultModel, app, args.passthrough);
+        if (exit !== undefined) return exit;
+      }
       return startRepl(app, {
         resume: args.resume,
         continueLatest: args.continueLatest,
@@ -162,13 +168,6 @@ async function main(): Promise<number> {
     }
   }
 }
-
-main()
-  .then((code) => process.exit(code))
-  .catch((err: unknown) => {
-    process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
 
 async function cmdMcp(app: FlowApp, rest: string[]): Promise<number> {
   const [sub, ...more] = rest;
@@ -233,4 +232,39 @@ async function cmdConfig(app: FlowApp, rest: string[]): Promise<number> {
   }
   process.stderr.write("usage: flow config [get [key]|set defaultModel <id>|edit]\n");
   return 2;
+}
+
+main()
+  .then((code) => process.exit(code))
+  .catch((err: unknown) => {
+    process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+
+async function askYesNo(question: string): Promise<boolean> {
+  const { createInterface } = await import("node:readline");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>((resolvePromise) => {
+      rl.question(question, (value) => resolvePromise(value.trim().toLowerCase()));
+    });
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+async function maybePassthrough(
+  modelId: string,
+  app: FlowApp,
+  forced: boolean,
+): Promise<number | undefined> {
+  const rule = matchRouting(app.config.routing, modelId);
+  if (rule.driver !== "cli" || rule.command === undefined) return undefined;
+  if (findOnPath(rule.command) === undefined) return undefined;
+  const cmdLine = [rule.command, ...(rule.args ?? [])].join(" ");
+  const go = forced || (await askYesNo(`passthrough to \`${cmdLine}\` (interactive)? [y/N] `));
+  if (!go) return undefined;
+  process.stdout.write(`launching ${cmdLine} …\n`);
+  return passthrough(rule.command, rule.args ?? []);
 }

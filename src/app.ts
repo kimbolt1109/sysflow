@@ -14,6 +14,7 @@ import type { SkillDef } from "@/domain/skills";
 import type { SubagentDef } from "@/domain/subagents";
 import type { ToolsPort } from "@/domain/toolDefs";
 import { runToolLoop, TOOL_SYSTEM, type ToolCheck } from "@/infrastructure/agentLoop";
+import { CliDriver, findOnPath } from "@/infrastructure/cliDrivers";
 import { discoverCommands } from "@/infrastructure/commandStore";
 import { DriverAgent } from "@/infrastructure/driverAgent";
 import { HookRunner, loadHooks } from "@/infrastructure/hookRunner";
@@ -92,12 +93,32 @@ function nativeDriverFor(config: Config, fetchFn?: typeof fetch): Driver | undef
   return undefined;
 }
 
+export function cliDriverFor(config: Config, modelId?: string): Driver | undefined {
+  const id = modelId ?? config.defaultModel;
+  const rule = matchRouting(config.routing, id);
+  if (
+    rule.driver === "cli" &&
+    rule.command !== undefined &&
+    findOnPath(rule.command) !== undefined
+  ) {
+    return new CliDriver(id, { command: rule.command, extraArgs: rule.args });
+  }
+  return undefined;
+}
+
 export function createDriverFor(config: Config, modelId: string, fetchFn?: typeof fetch): Driver {
   const scoped: Config = { ...config, defaultModel: modelId };
-  return (
-    nativeDriverFor(scoped, fetchFn) ??
-    new MockDriver(`${modelId} (mock: no key, M6 adds CLI passthrough)`)
-  );
+  const native = nativeDriverFor(scoped, fetchFn);
+  if (native !== undefined) return native;
+  const rule = matchRouting(config.routing, modelId);
+  if (
+    rule.driver === "cli" &&
+    rule.command !== undefined &&
+    findOnPath(rule.command) !== undefined
+  ) {
+    return new CliDriver(modelId, { command: rule.command, extraArgs: rule.args });
+  }
+  return new MockDriver(`${modelId} (mock: no key and no CLI found)`);
 }
 
 export function contextPrefixFor(memory: string, skills: SkillDef[]): string {
@@ -141,15 +162,11 @@ export function createApp(
   overrides: { driver?: Driver; fetchFn?: typeof fetch } = {},
 ): FlowApp {
   const logger = createLogger(config.logLevel);
-  const rule = matchRouting(config.routing, config.defaultModel);
   const driver =
     overrides.driver ??
     nativeDriverFor(config, overrides.fetchFn) ??
-    new MockDriver(
-      rule.driver === "native"
-        ? config.defaultModel
-        : `${config.defaultModel} (mock: no key, M6 adds CLI passthrough)`,
-    );
+    cliDriverFor(config) ??
+    new MockDriver(`${config.defaultModel} (mock: no key and no CLI found)`);
   const tools = new LocalTools(config.projectDir);
   const sessions = new SessionStore(config.dataDir, config.projectDir);
   const hooks = new HookRunner(loadHooks(config.dataDir, config.projectDir));

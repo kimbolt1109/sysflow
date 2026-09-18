@@ -25,6 +25,8 @@ describe("cli", () => {
     expect(parseArgv(["models"]).command).toBe("models");
     expect(parseArgv(["doctor"]).command).toBe("doctor");
     expect(parseArgv(["-y"]).dangerouslySkip).toBe(true);
+    expect(parseArgv(["--passthrough"]).passthrough).toBe(true);
+    expect(parseArgv([]).passthrough).toBe(false);
     expect(parseArgv(["--json"]).outputFormat).toBe("json");
     expect(parseArgv(["--output-format", "stream-json"]).outputFormat).toBe("stream-json");
     expect(parseArgv(["--permission-mode", "plan"]).permissionMode).toBe("plan");

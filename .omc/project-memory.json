@@ -1,0 +1,167 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1789708466965,
+  "projectRoot": "C:\\Side projects\\Flow",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "vitest",
+        "version": "3",
+        "category": "testing"
+      }
+    ],
+    "packageManager": "npm",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "npm run build",
+    "testCommand": "npm test",
+    "lintCommand": "npm run lint",
+    "devCommand": "npm run dev",
+    "scripts": {
+      "setup": "npm install",
+      "dev": "tsx src/index.ts --help",
+      "test": "vitest run",
+      "lint": "eslint . && tsc --noEmit",
+      "format": "prettier --write .",
+      "build": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json"
+    }
+  },
+  "conventions": {
+    "namingStyle": "camelCase",
+    "importStyle": "ES modules",
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "src",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "dist": {
+      "path": "dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 3,
+      "lastAccessed": 1789708466798,
+      "keyFiles": [
+        "app.js",
+        "config.js",
+        "index.js"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 2,
+      "lastAccessed": 1789708466806,
+      "keyFiles": [
+        "ARCHITECTURE.md",
+        "FEATURE_MATRIX.md"
+      ]
+    },
+    "research": {
+      "path": "research",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1789708466837,
+      "keyFiles": []
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 3,
+      "lastAccessed": 1789708466844,
+      "keyFiles": [
+        "app.ts",
+        "config.ts",
+        "index.ts"
+      ]
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 0,
+      "lastAccessed": 1789708466846,
+      "keyFiles": []
+    },
+    "dist\\api": {
+      "path": "dist\\api",
+      "purpose": "API routes",
+      "fileCount": 8,
+      "lastAccessed": 1789708466852,
+      "keyFiles": [
+        "cli.js",
+        "configView.js",
+        "council.js"
+      ]
+    },
+    "dist\\lib": {
+      "path": "dist\\lib",
+      "purpose": "Library code",
+      "fileCount": 2,
+      "lastAccessed": 1789708466854,
+      "keyFiles": [
+        "errors.js",
+        "logger.js"
+      ]
+    },
+    "src\\api": {
+      "path": "src\\api",
+      "purpose": "API routes",
+      "fileCount": 12,
+      "lastAccessed": 1789708466873,
+      "keyFiles": [
+        "cli.test.ts",
+        "cli.ts",
+        "configView.test.ts"
+      ]
+    },
+    "src\\lib": {
+      "path": "src\\lib",
+      "purpose": "Library code",
+      "fileCount": 2,
+      "lastAccessed": 1789708466882,
+      "keyFiles": [
+        "errors.ts",
+        "logger.ts"
+      ]
+    },
+    "tests\\fixtures": {
+      "path": "tests\\fixtures",
+      "purpose": "Test fixtures",
+      "fileCount": 2,
+      "lastAccessed": 1789708466886,
+      "keyFiles": [
+        "cliEcho.js",
+        "mcpEcho.js"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}

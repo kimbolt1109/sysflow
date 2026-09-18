@@ -26,6 +26,7 @@ export interface CliArgs {
   outputFormat: OutputFormat;
   dangerouslySkip: boolean;
   permissionMode?: PermissionMode;
+  passthrough: boolean;
   maxCost?: number;
   verbose: boolean;
   notify: boolean;
@@ -49,6 +50,7 @@ export function parseArgv(argv: string[]): CliArgs {
     continueLatest: false,
     outputFormat: "text",
     dangerouslySkip: false,
+    passthrough: false,
     verbose: false,
     notify: true,
     rest: [],
@@ -104,6 +106,8 @@ export function parseArgv(argv: string[]): CliArgs {
       args.command = "headless";
     } else if (tok === "-y" || tok === "--yolo" || tok === "--dangerously-skip-permissions") {
       args.dangerouslySkip = true;
+    } else if (tok === "--passthrough") {
+      args.passthrough = true;
     } else if (tok === "--permission-mode") {
       const value = next();
       if (value === undefined || !PERMISSION_MODES.includes(value as PermissionMode)) {
@@ -162,6 +166,6 @@ export function helpText(): string {
     "  flow doctor | flow mcp ... | flow config ... | flow update",
     "",
     "Flags: -y/--dangerously-skip-permissions, --permission-mode, --model(s),",
-    "  --mode, --max-cost, --verbose, --no-notify, --json",
+    "  --mode, --max-cost, --verbose, --no-notify, --json, --passthrough",
   ].join("\n");
 }
