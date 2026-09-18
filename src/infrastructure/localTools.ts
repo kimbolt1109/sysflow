@@ -1,7 +1,8 @@
 import { exec, type ExecException } from "node:child_process";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import type { ToolResult } from "@/domain/toolDefs";
+import type { ToolResult, ToolsPort } from "@/domain/toolDefs";
 
 const MAX_READ_BYTES = 256 * 1024;
 const MAX_GREP_HITS = 100;
@@ -41,8 +42,24 @@ export function matchGlobParts(pattern: string, path: string): boolean {
   return walk(0, 0);
 }
 
-export class LocalTools {
-  constructor(readonly rootDir: string) {}
+export class LocalTools implements ToolsPort {
+  rootDir: string;
+
+  constructor(rootDir: string) {
+    this.rootDir = resolve(rootDir);
+  }
+
+  chdir(path: string): void {
+    const resolved = resolve(this.rootDir, path);
+    let info;
+    try {
+      info = statSync(resolved);
+    } catch {
+      throw new Error(`no such directory: ${path}`);
+    }
+    if (!info.isDirectory()) throw new Error(`not a directory: ${path}`);
+    this.rootDir = resolved;
+  }
 
   resolveInRoot(target: string): string {
     const resolved = resolve(this.rootDir, target);

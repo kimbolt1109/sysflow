@@ -1,20 +1,51 @@
 import type { Driver } from "@/domain/drivers";
+import type { McpPort } from "@/domain/mcp";
 import type { ExecuteOutcome, Orchestrant, PlanDraft, Review } from "@/domain/orchestrator";
-import { runToolLoop, TOOL_SYSTEM, type ToolCheck } from "@/infrastructure/agentLoop";
-import type { LocalTools } from "@/infrastructure/localTools";
+import type { SubagentDef } from "@/domain/subagents";
+import type { ToolsPort } from "@/domain/toolDefs";
+import {
+  runToolLoop,
+  TOOL_SYSTEM,
+  type LoopHooks,
+  type ToolCheck,
+} from "@/infrastructure/agentLoop";
+
+export interface AgentExtras {
+  contextPrefix?: string;
+  subagents?: SubagentDef[];
+  mcp?: McpPort;
+  depth?: number;
+  hooks?: LoopHooks;
+}
+
+const MAX_SUBAGENT_DEPTH = 1;
 
 export class DriverAgent implements Orchestrant {
+  private readonly contextPrefix: string;
+  private readonly subagents: SubagentDef[];
+  private readonly mcp?: McpPort;
+  private readonly depth: number;
+  private readonly hooks?: LoopHooks;
+
   constructor(
     readonly name: string,
     private readonly driver: Driver,
-    private readonly tools: LocalTools,
+    private readonly tools: ToolsPort,
     private readonly check: ToolCheck,
-  ) {}
+    extras: AgentExtras = {},
+  ) {
+    this.contextPrefix = extras.contextPrefix ?? "";
+    this.subagents = extras.subagents ?? [];
+    this.mcp = extras.mcp;
+    this.depth = extras.depth ?? 0;
+    this.hooks = extras.hooks;
+  }
 
   private ask(system: string, user: string): Promise<string> {
+    const full = this.contextPrefix === "" ? system : `${this.contextPrefix}\n\n${system}`;
     return this.driver
       .sendMessage([
-        { role: "system", content: system },
+        { role: "system", content: full },
         { role: "user", content: user },
       ])
       .then((r) => r.text);
@@ -54,8 +85,44 @@ export class DriverAgent implements Orchestrant {
   async execute(plan: string): Promise<ExecuteOutcome> {
     const result = await runToolLoop(this.driver, this.tools, TOOL_SYSTEM, plan, {
       check: this.check,
+      hooks: this.hooks,
+      onTask: (subagent, prompt) => this.spawnSubagent(subagent, prompt),
+      onMcpTool: (name, args) => this.callMcp(name, args),
     });
     return { summary: result.answer, filesChanged: result.filesChanged };
+  }
+
+  private async spawnSubagent(name: string, prompt: string): Promise<string> {
+    if (this.depth >= MAX_SUBAGENT_DEPTH) {
+      return "subagent depth exceeded: handle this part yourself";
+    }
+    const def = this.subagents.find((s) => s.name === name);
+    if (def === undefined) {
+      return `unknown subagent "${name}" (available: ${this.subagents.map((s) => s.name).join(", ") || "none"})`;
+    }
+    const allowed = def.tools.map((t) => t.toLowerCase());
+    const filtered: ToolCheck = (tool, input) => {
+      if (allowed.length > 0 && !allowed.includes(tool)) return "deny";
+      return this.check(tool, input);
+    };
+    const system = def.prompt === "" ? "You are a subagent. Complete the task." : def.prompt;
+    const result = await runToolLoop(
+      this.driver,
+      this.tools,
+      `${system}\n\n${TOOL_SYSTEM}`,
+      prompt,
+      {
+        check: filtered,
+        hooks: this.hooks,
+        maxTurns: 8,
+      },
+    );
+    return result.answer;
+  }
+
+  private async callMcp(name: string, args: unknown): Promise<string> {
+    if (this.mcp === undefined) return `mcp unavailable: ${name} (no MCP servers configured)`;
+    return this.mcp.call(name, args);
   }
 
   async review(plan: string, outcome: ExecuteOutcome): Promise<Review> {

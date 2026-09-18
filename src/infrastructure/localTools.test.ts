@@ -45,6 +45,15 @@ describe("LocalTools", () => {
     expect(() => tools.resolveInRoot("../outside.txt")).toThrow("escapes workspace");
   });
 
+  it("changes the workspace root", async () => {
+    await tools.write("sub/note.txt", "x");
+    tools.chdir("sub");
+
+    expect((await tools.read("note.txt")).output).toBe("x");
+    expect(() => tools.chdir("../..")).not.toThrow();
+    expect(() => tools.chdir("missing-dir")).toThrow("no such directory");
+  });
+
   it("globs and greps workspace files", async () => {
     await tools.write("src/a.ts", "const answer = 42;\n");
     await tools.write("src/b.md", "nothing here\n");

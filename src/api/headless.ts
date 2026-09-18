@@ -22,11 +22,18 @@ export async function runHeadless(
   if (prompt.trim() === "") throw new Error('headless mode needs -p "task"');
   const model = args.model ?? app.config.defaultModel;
   const sessionId = randomUUID();
+  await app.hooks.fire("SessionStart", { session_id: sessionId, model, headless: true });
+  const submitted = await app.hooks.fire("UserPromptSubmit", { session_id: sessionId, prompt });
+  if (submitted.decision === "block") {
+    throw new Error(`prompt blocked: ${submitted.reason}`);
+  }
 
   if (council !== undefined) {
     app.sessions.append(sessionId, { type: "headless-start", prompt, model, mode: council.mode });
     const run = await council.run(prompt, emit);
     for (const record of run.sessionRecords) app.sessions.append(sessionId, record);
+    await app.hooks.fire("Notification", { session_id: sessionId, kind: "task-complete" });
+    await app.hooks.fire("Stop", { session_id: sessionId });
     return {
       text: run.text,
       model,
@@ -48,6 +55,8 @@ export async function runHeadless(
       text: result.text,
       usage: result.usage,
     });
+    await app.hooks.fire("Notification", { session_id: sessionId, kind: "task-complete" });
+    await app.hooks.fire("Stop", { session_id: sessionId });
     return {
       text: result.text,
       model,
@@ -58,6 +67,8 @@ export async function runHeadless(
   }
   const result = await app.driver.sendMessage(messages);
   app.sessions.append(sessionId, { type: "headless-end", text: result.text, usage: result.usage });
+  await app.hooks.fire("Notification", { session_id: sessionId, kind: "task-complete" });
+  await app.hooks.fire("Stop", { session_id: sessionId });
   return {
     text: result.text,
     model,

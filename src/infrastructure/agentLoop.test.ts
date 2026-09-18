@@ -82,4 +82,73 @@ describe("agentLoop", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("routes task fences to subagents", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "flow-loop-"));
+    try {
+      const tools = new LocalTools(dir);
+      const driver = new ScriptDriver("mock/loop", [
+        '```tool:task\n{"subagent_type": "rev", "prompt": "check it"}\n```',
+        "wrapped up",
+      ]);
+
+      const result = await runToolLoop(driver, tools, "sys", "task", {
+        onTask: async (name, prompt) => `${name}:${prompt}`,
+      });
+
+      expect(result.answer).toBe("wrapped up");
+      expect(result.transcript.some((m) => m.content === "rev:check it")).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("routes mcp__ fences to MCP tools", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "flow-loop-"));
+    try {
+      const tools = new LocalTools(dir);
+      const driver = new ScriptDriver("mock/loop", [
+        '```tool:mcp__echo__echo\n{"x": 1}\n```',
+        "mcp done",
+      ]);
+
+      const result = await runToolLoop(driver, tools, "sys", "task", {
+        onMcpTool: async (name) => `called ${name}`,
+      });
+
+      expect(result.answer).toBe("mcp done");
+      expect(result.transcript.some((m) => m.content === "called mcp__echo__echo")).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fires hook gates around tool calls", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "flow-loop-"));
+    try {
+      const tools = new LocalTools(dir);
+      const driver = new ScriptDriver("mock/loop", [
+        '```tool:read\n{"path": "nope.txt"}\n```',
+        "fell back",
+      ]);
+      const seen: string[] = [];
+
+      const result = await runToolLoop(driver, tools, "sys", "task", {
+        hooks: {
+          before: async (name) => {
+            seen.push(`before:${name}`);
+            return { decision: "proceed" };
+          },
+          after: async (name) => {
+            seen.push(`after:${name}`);
+          },
+        },
+      });
+
+      expect(result.answer).toBe("fell back");
+      expect(seen).toEqual(["before:read", "after:read"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

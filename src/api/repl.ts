@@ -1,20 +1,22 @@
-import { randomUUID } from "node:crypto";
+﻿import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import type { FlowApp } from "@/app";
 import { helpText } from "@/api/cli";
+import { describeConfig } from "@/api/configView";
 import { CouncilSession } from "@/api/council";
 import { runDoctor } from "@/api/doctor";
 import type { ChatMessage, OrchestrationMode } from "@/domain/models";
-import { findCommand } from "@/domain/commands";
+import { findCommand, substituteArgs } from "@/domain/commands";
 import { compactHistory } from "@/domain/compaction";
 import { findModel } from "@/domain/modelRegistry";
 import type { Orchestrant } from "@/domain/orchestrator";
-import { checkPermission, parseRule } from "@/domain/permissions";
+import { parseRule } from "@/domain/permissions";
 import type { PermissionMode, PermissionRule } from "@/domain/permissions";
 import { sessionPreview } from "@/domain/sessions";
+import { skillListing } from "@/domain/skills";
+import { subagentListing } from "@/domain/subagents";
 import { buildContextUsage, renderContextBars } from "@/domain/tokenizer";
-import { TOOL_DESCRIPTIONS, type ToolName } from "@/domain/toolDefs";
-import { loadPermissionRules, saveRule } from "@/infrastructure/permissionStore";
+import { runReadTool, runWriteTool } from "@/api/toolCommands";
 
 export interface ReplOptions {
   resume?: string;
@@ -24,26 +26,14 @@ export interface ReplOptions {
   agents?: Orchestrant[];
   councilMode?: OrchestrationMode;
   councilLead?: string;
-}
-
-function toolLabel(name: ToolName): string {
-  return name[0]?.toUpperCase() + name.slice(1);
-}
-
-function alwaysAllowPattern(tool: string, target: string): string {
-  if (tool === "Bash") {
-    const words = target.split(/\s+/).filter((w) => w !== "");
-    const head = words.slice(0, 2).join(" ");
-    return `${head === "" ? "*" : head}:*`;
-  }
-  return target === "" ? "*" : target;
+  editor?: string;
 }
 
 export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number> {
   const mode: PermissionMode = opts.dangerouslySkip
     ? "bypassPermissions"
     : (opts.permissionMode ?? "default");
-  const rules = loadPermissionRules(app.config.dataDir, app.config.projectDir);
+  const rules = app.rules;
   let sessionId = resolveSession(app, opts);
   const history: ChatMessage[] = loadHistory(app, sessionId);
   const council =
@@ -83,6 +73,11 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
       `council: ${council.names().join(", ")} · mode=${council.mode} · Esc interjects, @agent DMs\n`,
     );
   }
+  if (app.legacyImport !== undefined && !app.importOffered()) {
+    process.stdout.write(`found ${app.legacyImport} — run /init to import it into .flow/FLOW.md\n`);
+    app.markImportOffered();
+  }
+  await app.hooks.fire("SessionStart", { session_id: sessionId, model: app.driver.id });
   rl.prompt();
   for await (const line of rl) {
     const input = line.trim();
@@ -96,9 +91,11 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
       continue;
     }
     if (input.startsWith("/")) {
-      const done = await runSlash(app, rl, sessionId, history, mode, rules, council, input);
+      const done = await runSlash(app, rl, sessionId, history, mode, rules, council, input, opts);
       if (done === "exit") {
         rl.close();
+        await app.hooks.fire("SessionEnd", { session_id: sessionId });
+        await app.hooks.fire("Stop", { session_id: sessionId });
         return 0;
       }
       rl.prompt();
@@ -106,6 +103,15 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
     }
     if (council !== undefined) {
       await runCouncilTurn(app, council, sessionId, history, input);
+      rl.prompt();
+      continue;
+    }
+    const submitted = await app.hooks.fire("UserPromptSubmit", {
+      session_id: sessionId,
+      prompt: input,
+    });
+    if (submitted.decision === "block") {
+      process.stdout.write(`blocked: ${submitted.reason}\n`);
       rl.prompt();
       continue;
     }
@@ -127,7 +133,7 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
         history.push({ role: "assistant", content: text });
         app.sessions.append(sessionId, { type: "assistant", text });
       }
-      if (maybeCompact(app, sessionId, history)) {
+      if (await maybeCompact(app, sessionId, history)) {
         process.stdout.write(
           `[auto-compact at ${Math.round(app.config.compactThreshold * 100)}%: transcript summarized, recent window kept]\n`,
         );
@@ -139,6 +145,8 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
     generating = false;
     rl.prompt();
   }
+  await app.hooks.fire("SessionEnd", { session_id: sessionId });
+  await app.hooks.fire("Stop", { session_id: sessionId });
   return 0;
 }
 
@@ -151,6 +159,14 @@ async function runCouncilTurn(
 ): Promise<void> {
   const dm = input.match(/^@(\S+)\s+([\s\S]+)$/);
   const task = dm !== null ? `[direct message for ${dm[1]}] ${dm[2]}` : input;
+  const submitted = await app.hooks.fire("UserPromptSubmit", {
+    session_id: sessionId,
+    prompt: task,
+  });
+  if (submitted.decision === "block") {
+    process.stdout.write(`blocked: ${submitted.reason}\n`);
+    return;
+  }
   history.push({ role: "user", content: input });
   app.sessions.append(sessionId, { type: "user", text: input });
   try {
@@ -158,7 +174,8 @@ async function runCouncilTurn(
     process.stdout.write(`${run.text}\n`);
     history.push({ role: "assistant", content: run.text });
     app.sessions.append(sessionId, { type: "assistant", text: run.text });
-    if (maybeCompact(app, sessionId, history)) {
+    await app.hooks.fire("Notification", { session_id: sessionId, kind: "task-complete" });
+    if (await maybeCompact(app, sessionId, history)) {
       process.stdout.write("[auto-compact: transcript summarized, recent window kept]\n");
     }
   } catch (err) {
@@ -179,15 +196,25 @@ function usageOf(app: FlowApp, history: ChatMessage[]) {
   );
 }
 
-function maybeCompact(app: FlowApp, sessionId: string, history: ChatMessage[]): boolean {
+async function maybeCompact(
+  app: FlowApp,
+  sessionId: string,
+  history: ChatMessage[],
+): Promise<boolean> {
   const result = compactHistory(history, contextWindowOf(app), app.config.compactThreshold);
   history.length = 0;
   history.push(...result.history);
-  if (result.compacted) {
-    app.sessions.append(sessionId, { type: "compact", summary: result.summary });
-    return true;
+  if (!result.compacted) return false;
+  const pre = await app.hooks.fire("PreCompact", {
+    session_id: sessionId,
+    summary: result.summary,
+  });
+  if (pre.decision === "block") {
+    process.stdout.write(`compact skipped: ${pre.reason}\n`);
+    return false;
   }
-  return false;
+  app.sessions.append(sessionId, { type: "compact", summary: result.summary });
+  return true;
 }
 
 function resolveSession(app: FlowApp, opts: ReplOptions): string {
@@ -247,46 +274,6 @@ function resumeInPlace(
   return target;
 }
 
-async function ask(rl: ReturnType<typeof createInterface>, question: string): Promise<string> {
-  return new Promise((resolvePromise) => {
-    rl.question(question, (answer) => resolvePromise(answer.trim().toLowerCase()));
-  });
-}
-
-async function confirmTool(
-  app: FlowApp,
-  rl: ReturnType<typeof createInterface>,
-  sessionId: string,
-  mode: PermissionMode,
-  rules: PermissionRule[],
-  tool: string,
-  target: Record<string, unknown>,
-  pattern: string,
-): Promise<boolean> {
-  const decision = checkPermission(mode, rules, tool, target);
-  if (decision === "deny") {
-    process.stdout.write(`denied by permission rules.\n`);
-    app.sessions.append(sessionId, { type: "tool-blocked", tool });
-    return false;
-  }
-  if (decision === "ask") {
-    const answer = await ask(rl, `allow ${tool} ${JSON.stringify(target)}? [y/a(always)/n] `);
-    if (answer === "a") {
-      const rule = { tool, pattern, decision: "allow" as const };
-      saveRule(app.config.projectDir, rule);
-      rules.push(rule);
-      process.stdout.write("allowed always (saved to .flow/settings.local.json).\n");
-      return true;
-    }
-    if (answer !== "y") {
-      process.stdout.write("blocked.\n");
-      app.sessions.append(sessionId, { type: "tool-blocked", tool });
-      return false;
-    }
-  }
-  return true;
-}
-
 async function runSlash(
   app: FlowApp,
   rl: ReturnType<typeof createInterface>,
@@ -296,6 +283,7 @@ async function runSlash(
   rules: PermissionRule[],
   council: CouncilSession | undefined,
   input: string,
+  opts: ReplOptions,
 ): Promise<"exit" | "continue"> {
   const [cmd, ...rest] = input.slice(1).split(/\s+/);
   const arg = rest.join(" ").trim();
@@ -305,7 +293,7 @@ async function runSlash(
       return "exit";
     case "help":
       process.stdout.write(
-        `${helpText()}\n\nREPL: /clear /context /compact [focus] /model /models /permissions /sessions /resume /doctor plus /read /write /edit /bash /glob /grep\n`,
+        `${helpText()}\n\nREPL: /clear /context /compact [focus] /model /models /permissions /sessions /resume /doctor /skills /memory /init /mcp /agents /config /review /add-dir plus /read /write /edit /bash /glob /grep\n`,
       );
       return "continue";
     case "context": {
@@ -362,14 +350,89 @@ async function runSlash(
       }
       try {
         const rule = parseRule(ruleParts.join(" "), decision);
-        saveRule(app.config.projectDir, rule);
-        rules.push(rule);
+        app.savePermissionRule(rule);
         process.stdout.write(`saved ${decision} ${rule.tool}(${rule.pattern}).\n`);
       } catch (err) {
         process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
       return "continue";
     }
+    case "skills":
+      if (arg === "") {
+        process.stdout.write(`${skillListing(app.skills)}\n`);
+        return "continue";
+      }
+      {
+        const body = app.skillBody(arg);
+        if (body === undefined) {
+          process.stdout.write(`unknown skill "${arg}"\n`);
+          return "continue";
+        }
+        process.stdout.write(`${body}\n`);
+      }
+      return "continue";
+    case "memory":
+      if (arg === "edit") {
+        const project = app.memoryFiles[1];
+        if (project === undefined) {
+          process.stdout.write("no project memory file.\n");
+          return "continue";
+        }
+        app.editPath(project.path, opts.editor ?? defaultEditor());
+        return "continue";
+      }
+      for (const file of app.memoryFiles) {
+        process.stdout.write(`${file.path}: ${file.content.length} chars\n`);
+      }
+      return "continue";
+    case "init": {
+      const done = app.initMemory();
+      process.stdout.write(
+        `wrote ${done.path}${done.imported === undefined ? "" : ` (imported ${done.imported})`}\n`,
+      );
+      return "continue";
+    }
+    case "mcp": {
+      const names = app.mcp.servers;
+      if (names.length === 0) {
+        process.stdout.write("no MCP servers (see .flow/mcp.json)\n");
+        return "continue";
+      }
+      const inventory = await app.mcp.toolInventory();
+      process.stdout.write(`servers: ${names.join(", ")}\n`);
+      for (const tool of inventory.slice(0, 50)) {
+        process.stdout.write(`- ${tool.namespaced}: ${tool.description}\n`);
+      }
+      return "continue";
+    }
+    case "config":
+      process.stdout.write(`${describeConfig(app)}\n`);
+      return "continue";
+    case "review": {
+      const diff = await app.tools.bash("git diff --stat && git diff | head -c 6000");
+      if (!diff.ok) {
+        process.stdout.write(`review needs a git repo: ${diff.output.slice(0, 200)}\n`);
+        return "continue";
+      }
+      const verdict = await app.driver.sendMessage([
+        { role: "system", content: "Review this diff for bugs and quality. Be concise." },
+        { role: "user", content: diff.output },
+      ]);
+      process.stdout.write(`${verdict.text}\n`);
+      return "continue";
+    }
+    case "add-dir":
+      if (arg === "") {
+        process.stdout.write(`workspace: ${app.tools.rootDir}\nusage: /add-dir <path>\n`);
+        return "continue";
+      }
+      try {
+        app.tools.chdir(arg);
+        process.stdout.write(`workspace: ${app.tools.rootDir}\n`);
+      } catch (err) {
+        process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      return "continue";
     case "sessions":
       for (const id of app.sessions.list()) {
         process.stdout.write(`${id}  ${sessionPreview(app.sessions.load(id))}\n`);
@@ -378,13 +441,28 @@ async function runSlash(
     case "doctor":
       runDoctor(app);
       return "continue";
-    case "agents":
-      if (council === undefined) {
-        process.stdout.write("solo session — start with --agents a,b for a council.\n");
+    case "agents": {
+      const [sub, ...subRest] = arg.split(/\s+/).filter((p) => p !== "");
+      if (sub === "run" && subRest.length >= 2) {
+        const [name, ...promptParts] = subRest as [string, ...string[]];
+        try {
+          const answer = await app.runSubagent(name ?? "", promptParts.join(" "), (token) =>
+            process.stdout.write(token),
+          );
+          process.stdout.write(`\n${answer}\n`);
+        } catch (err) {
+          process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
         return "continue";
       }
-      process.stdout.write(`${council.interject("agents", "")}\n`);
+      if (council !== undefined) {
+        process.stdout.write(`${council.interject("agents", "")}\n`);
+      } else {
+        process.stdout.write("solo session — start with --agents a,b for a council.\n");
+      }
+      process.stdout.write(`${subagentListing(app.subagents)}\n`);
       return "continue";
+    }
     case "mute":
     case "unmute":
     case "promote":
@@ -407,6 +485,17 @@ async function runSlash(
     case "bash":
       return runWriteTool(app, rl, sessionId, mode, rules, cmd, arg);
     default: {
+      const custom = app.customCommands.find((c) => c.name === cmd);
+      if (custom !== undefined) {
+        await runCustomCommand(
+          app,
+          council,
+          sessionId,
+          history,
+          substituteArgs(custom.template, arg),
+        );
+        return "continue";
+      }
       const known = findCommand(cmd ?? "");
       if (known !== undefined) {
         process.stdout.write(
@@ -420,93 +509,37 @@ async function runSlash(
   }
 }
 
-async function runReadTool(
-  app: FlowApp,
-  rl: ReturnType<typeof createInterface>,
-  sessionId: string,
-  mode: PermissionMode,
-  rules: PermissionRule[],
-  cmd: string,
-  arg: string,
-): Promise<"exit" | "continue"> {
-  if (arg === "") {
-    process.stdout.write(`usage: /${cmd} <target>\n${TOOL_DESCRIPTIONS[cmd as ToolName]}\n`);
-    return "continue";
-  }
-  const tool = toolLabel(cmd as ToolName);
-  const target = { path: arg, command: arg };
-  if (!(await confirmTool(app, rl, sessionId, mode, rules, tool, target, arg))) return "continue";
-  const result =
-    cmd === "read"
-      ? await app.tools.read(arg)
-      : cmd === "glob"
-        ? await app.tools.glob(arg)
-        : await app.tools.grep(arg);
-  process.stdout.write(`${result.output === "" ? "(no output)" : result.output}\n`);
-  app.sessions.append(sessionId, { type: "tool", tool: cmd, arg, ok: result.ok });
-  return "continue";
+function defaultEditor(): string {
+  return process.platform === "win32" ? "notepad" : "vi";
 }
 
-async function runWriteTool(
+async function runCustomCommand(
   app: FlowApp,
-  rl: ReturnType<typeof createInterface>,
+  council: CouncilSession | undefined,
   sessionId: string,
-  mode: PermissionMode,
-  rules: PermissionRule[],
-  cmd: string,
-  arg: string,
-): Promise<"exit" | "continue"> {
-  if (mode === "plan") {
-    process.stdout.write("plan mode: writes are disabled (read-only).\n");
-    return "continue";
+  history: ChatMessage[],
+  task: string,
+): Promise<void> {
+  history.push({ role: "user", content: task });
+  app.sessions.append(sessionId, { type: "user", text: task });
+  if (council !== undefined) {
+    const run = await council.run(task, (line) => process.stdout.write(`${line}\n`));
+    process.stdout.write(`${run.text}\n`);
+    history.push({ role: "assistant", content: run.text });
+    app.sessions.append(sessionId, { type: "assistant", text: run.text });
+    return;
   }
-  const parts = arg.split(/\s+/).filter((p) => p !== "");
-  if (cmd === "bash" && arg !== "") {
-    const target = { command: arg };
-    if (
-      !(await confirmTool(
-        app,
-        rl,
-        sessionId,
-        mode,
-        rules,
-        "Bash",
-        target,
-        alwaysAllowPattern("Bash", arg),
-      ))
-    ) {
-      return "continue";
-    }
-    const result = await app.tools.bash(arg);
-    process.stdout.write(`${result.output === "" ? "(no output)" : result.output}\n`);
-    app.sessions.append(sessionId, { type: "tool", tool: cmd, ok: result.ok });
-    return "continue";
+  try {
+    let text = "";
+    const transcript = [...history];
+    await app.driver.streamMessage(transcript, (token) => {
+      text += token;
+      process.stdout.write(token);
+    });
+    process.stdout.write("\n");
+    history.push({ role: "assistant", content: text });
+    app.sessions.append(sessionId, { type: "assistant", text });
+  } catch (err) {
+    process.stdout.write(`\nerror: ${err instanceof Error ? err.message : String(err)}\n`);
   }
-  if ((cmd === "write" || cmd === "edit") && parts.length >= 2) {
-    const [path, ...contentParts] = parts as [string, ...string[]];
-    const tool = toolLabel(cmd as ToolName);
-    if (!(await confirmTool(app, rl, sessionId, mode, rules, tool, { path }, path ?? ""))) {
-      return "continue";
-    }
-    if (cmd === "write") {
-      const result = await app.tools.write(path ?? "", contentParts.join(" "));
-      process.stdout.write(`${result.output}\n`);
-      app.sessions.append(sessionId, { type: "tool", tool: cmd, ok: result.ok });
-      return "continue";
-    }
-    const content = contentParts.join(" ");
-    const sep = content.indexOf(" :: ");
-    if (sep < 0) {
-      process.stdout.write("usage: /edit <path> <old> :: <new>\n");
-      return "continue";
-    }
-    const result = await app.tools.edit(path ?? "", content.slice(0, sep), content.slice(sep + 4));
-    process.stdout.write(`${result.output}\n`);
-    app.sessions.append(sessionId, { type: "tool", tool: cmd, ok: result.ok });
-    return "continue";
-  }
-  process.stdout.write(
-    cmd === "bash" ? "usage: /bash <command>\n" : `usage: /${cmd} <path> <content...>\n`,
-  );
-  return "continue";
 }

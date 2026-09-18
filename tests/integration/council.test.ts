@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CouncilSession } from "@/api/council";
 import { createApp } from "@/app";
 import { loadConfig } from "@/config";
-import { runCouncil, type ExecuteOutcome, type Orchestrant, type Review } from "@/domain/orchestrator";
+import {
+  runCouncil,
+  type ExecuteOutcome,
+  type Orchestrant,
+  type Review,
+} from "@/domain/orchestrator";
 
 class ScriptAgent implements Orchestrant {
   constructor(

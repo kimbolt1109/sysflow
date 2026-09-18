@@ -1,4 +1,4 @@
-export type CommandStatus = "ready" | "m3" | "m4" | "m5" | "m7";
+﻿export type CommandStatus = "ready" | "m3" | "m4" | "m5" | "m7";
 
 export interface SlashCommand {
   name: string;
@@ -14,24 +14,24 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "model", description: "Show the active model.", status: "ready" },
   { name: "models", description: "List registry models.", status: "ready" },
   { name: "agents", description: "Manage agents (multi-agent view).", status: "ready" },
-  { name: "skills", description: "List available skills.", status: "m5" },
+  { name: "skills", description: "List available skills.", status: "ready" },
   { name: "permissions", description: "Show permission mode and rules.", status: "ready" },
   { name: "status", description: "Provider quota and usage status.", status: "m7" },
   { name: "usage", description: "Plan usage limits and rate limits.", status: "m7" },
   { name: "cost", description: "Session and daily cost.", status: "m7" },
   { name: "sessions", description: "List sessions with previews.", status: "ready" },
   { name: "resume", description: "Switch to another session in place.", status: "ready" },
-  { name: "init", description: "Scaffold a FLOW.md for the project.", status: "m5" },
-  { name: "memory", description: "Open memory files in an editor.", status: "m5" },
-  { name: "mcp", description: "Manage MCP server connections.", status: "m5" },
-  { name: "config", description: "View or edit configuration.", status: "m5" },
+  { name: "init", description: "Scaffold a FLOW.md for the project.", status: "ready" },
+  { name: "memory", description: "Open memory files in an editor.", status: "ready" },
+  { name: "mcp", description: "Manage MCP server connections.", status: "ready" },
+  { name: "config", description: "View or edit configuration.", status: "ready" },
   { name: "doctor", description: "Diagnose setup and auth.", status: "ready" },
-  { name: "review", description: "Review the working-tree diff.", status: "m5" },
+  { name: "review", description: "Review the working-tree diff.", status: "ready" },
   { name: "undo", description: "Undo the last file change.", status: "m7" },
   { name: "rewind", description: "Rewind to an earlier checkpoint.", status: "m7" },
   { name: "export", description: "Export the conversation to a file.", status: "m7" },
   { name: "theme", description: "Switch theme presets.", status: "m7" },
-  { name: "add-dir", description: "Add a working directory.", status: "m5" },
+  { name: "add-dir", description: "Add a working directory.", status: "ready" },
   { name: "vim", description: "Toggle vim keybindings.", status: "m7" },
   { name: "exit", description: "Exit the session.", status: "ready" },
   { name: "mute", description: "Mute an agent (multi-agent).", status: "ready" },
@@ -52,4 +52,19 @@ export function parseSlash(input: string): { name: string; args: string } | unde
   const [name, ...rest] = input.slice(1).split(/\s+/);
   if (name === undefined || name === "") return undefined;
   return { name, args: rest.join(" ").trim() };
+}
+
+export interface CustomCommand {
+  name: string;
+  template: string;
+  source: string;
+}
+
+export function substituteArgs(template: string, args: string): string {
+  const words = args.split(/\s+/).filter((w) => w !== "");
+  let out = template.replace(/\$ARGUMENTS/g, args);
+  words.forEach((word, index) => {
+    out = out.replace(new RegExp(`\\$${index + 1}\\b`, "g"), word);
+  });
+  return out;
 }

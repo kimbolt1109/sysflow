@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findCommand, parseSlash, SLASH_COMMANDS } from "@/domain/commands";
+import { findCommand, parseSlash, SLASH_COMMANDS, substituteArgs } from "@/domain/commands";
 
 const SPEC_COMMANDS = [
   "help",
@@ -59,5 +59,10 @@ describe("commands", () => {
     expect(parseSlash("/model foo")).toEqual({ name: "model", args: "foo" });
     expect(parseSlash("/clear")).toEqual({ name: "clear", args: "" });
     expect(parseSlash("plain")).toBeUndefined();
+  });
+
+  it("substitutes $ARGUMENTS and $N in custom commands", () => {
+    expect(substituteArgs("fix $ARGUMENTS now", "a b")).toBe("fix a b now");
+    expect(substituteArgs("diff $1 against $2", "x y")).toBe("diff x against y");
   });
 });

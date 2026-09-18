@@ -1,8 +1,24 @@
-export type ToolName = "read" | "write" | "edit" | "bash" | "glob" | "grep";
+export type ToolName = "read" | "write" | "edit" | "bash" | "glob" | "grep" | "task";
 
 export interface ToolResult {
   ok: boolean;
   output: string;
+}
+
+export interface ToolsPort {
+  readonly rootDir: string;
+  chdir(path: string): void;
+  read(path: string): Promise<ToolResult>;
+  write(path: string, content: string): Promise<ToolResult>;
+  edit(
+    path: string,
+    oldString: string,
+    newString: string,
+    replaceAll?: boolean,
+  ): Promise<ToolResult>;
+  bash(command: string, timeoutMs?: number): Promise<ToolResult>;
+  glob(pattern: string): Promise<ToolResult>;
+  grep(pattern: string, include?: string): Promise<ToolResult>;
 }
 
 export interface ToolCall {
@@ -20,7 +36,8 @@ export function parseToolCall(value: unknown): ToolCall | undefined {
     name !== "edit" &&
     name !== "bash" &&
     name !== "glob" &&
-    name !== "grep"
+    name !== "grep" &&
+    name !== "task"
   ) {
     return undefined;
   }
@@ -36,4 +53,5 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   bash: "Execute a shell command with timeout.",
   glob: "Find files matching a pattern (*, **, ?).",
   grep: "Search file contents with a regex.",
+  task: "Spawn a subagent: {subagent_type, prompt}.",
 };

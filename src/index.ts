@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createApp, createDriverAgents, type FlowApp } from "@/app";
 import { helpText, parseArgv, type CliArgs } from "@/api/cli";
+import { describeConfig } from "@/api/configView";
 import { CouncilSession } from "@/api/council";
 import { runDoctor } from "@/api/doctor";
 import { formatHeadless, runHeadless } from "@/api/headless";
@@ -10,7 +11,10 @@ import { loadConfig } from "@/config";
 import { checkPermission } from "@/domain/permissions";
 import { sessionPreview } from "@/domain/sessions";
 import type { ToolCheck } from "@/infrastructure/agentLoop";
+import { removeMcpServer, saveMcpServer } from "@/infrastructure/mcpClients";
+import { resolveEditor } from "@/infrastructure/memoryStore";
 import { loadPermissionRules } from "@/infrastructure/permissionStore";
+import { userSettingsPath, writeUserDefaultModel } from "@/infrastructure/userSettings";
 import { AppError } from "@/lib/errors";
 
 const VERSION = "0.1.0";
@@ -91,11 +95,11 @@ async function main(): Promise<number> {
     case "doctor":
       return runDoctor(app);
     case "mcp":
+      return cmdMcp(app, args.rest);
     case "config":
+      return cmdConfig(app, args.rest);
     case "update":
-      process.stdout.write(
-        `${args.command} management lands in M5/M7 — see docs/ARCHITECTURE.md\n`,
-      );
+      process.stdout.write("flow updates via npm (M8 publishes flow-ai-cli)\n");
       return 0;
     case "headless": {
       try {
@@ -153,6 +157,7 @@ async function main(): Promise<number> {
         agents: council === undefined ? undefined : council.agents,
         councilMode: council?.mode,
         councilLead: council?.lead,
+        editor: resolveEditor(process.env),
       });
     }
   }
@@ -164,3 +169,68 @@ main()
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exit(1);
   });
+
+async function cmdMcp(app: FlowApp, rest: string[]): Promise<number> {
+  const [sub, ...more] = rest;
+  if (sub === "list" || sub === undefined) {
+    if (app.mcp.servers.length === 0) {
+      process.stdout.write("no MCP servers (add one in ~/.flow/mcp.json or .flow/mcp.json)\n");
+      return 0;
+    }
+    const inventory = await app.mcp.toolInventory();
+    process.stdout.write(`servers: ${app.mcp.servers.join(", ")}\n`);
+    for (const tool of inventory) {
+      process.stdout.write(`- ${tool.namespaced}: ${tool.description}\n`);
+    }
+    return 0;
+  }
+  if (sub === "add" && more.length >= 3 && more[0] === "stdio") {
+    const [, name, , ...cmd] = more as [string, string, string, ...string[]];
+    const command = cmd[0];
+    if (name === undefined || command === undefined) {
+      process.stderr.write("usage: flow mcp add stdio <name> -- <command> [args...]\n");
+      return 2;
+    }
+    saveMcpServer(app.config.dataDir, { name, transport: "stdio", command, args: cmd.slice(1) });
+    process.stdout.write(`added mcp server ${name}\n`);
+    return 0;
+  }
+  if (sub === "add" && more.length === 3 && (more[0] === "http" || more[0] === "sse")) {
+    const [transport, name, url] = more as [string, string, string];
+    saveMcpServer(app.config.dataDir, {
+      name,
+      transport: transport as "http" | "sse",
+      url,
+    });
+    process.stdout.write(`added mcp server ${name}\n`);
+    return 0;
+  }
+  if (sub === "remove" && more.length === 1) {
+    const removed = removeMcpServer(app.config.dataDir, more[0] as string);
+    process.stdout.write(removed ? `removed ${more[0]}\n` : `no such server: ${more[0]}\n`);
+    return removed ? 0 : 1;
+  }
+  process.stderr.write(
+    "usage: flow mcp [list|add stdio <name> -- <cmd>|add http|sse <name> <url>|remove <name>]\n",
+  );
+  return 2;
+}
+
+async function cmdConfig(app: FlowApp, rest: string[]): Promise<number> {
+  const [sub, key, ...more] = rest;
+  if (sub === "get" || sub === undefined) {
+    process.stdout.write(`${describeConfig(app, key)}\n`);
+    return 0;
+  }
+  if (sub === "set" && key === "defaultModel" && more.length === 1) {
+    writeUserDefaultModel(app.config.dataDir, more[0] as string);
+    process.stdout.write(`defaultModel=${more[0]}\n`);
+    return 0;
+  }
+  if (sub === "edit") {
+    app.editPath(userSettingsPath(app.config.dataDir), resolveEditor(process.env));
+    return 0;
+  }
+  process.stderr.write("usage: flow config [get [key]|set defaultModel <id>|edit]\n");
+  return 2;
+}
