@@ -1,43 +1,48 @@
-import express from "express";
-import type { Express, NextFunction, Request, Response } from "express";
 import type { Config } from "@/config";
-import { healthRouter } from "@/api/routes/health";
-import { itemsRouter } from "@/api/routes/items";
-import { ItemService } from "@/domain/items";
-import { InMemoryItemsRepo } from "@/infrastructure/itemsRepo";
-import { AppError } from "@/lib/errors";
-import { createLogger } from "@/lib/logger";
-import type { Logger } from "@/lib/logger";
+import type { Driver } from "@/domain/drivers";
+import { matchRouting } from "@/domain/routing";
+import { LocalTools } from "@/infrastructure/localTools";
+import { MockDriver } from "@/infrastructure/mockDriver";
+import { AnthropicDriver } from "@/infrastructure/nativeAnthropic";
+import { SessionStore } from "@/infrastructure/sessionStore";
+import { createLogger, type Logger } from "@/lib/logger";
 
-export interface App {
-  app: Express;
+export interface FlowApp {
+  config: Config;
   logger: Logger;
+  driver: Driver;
+  tools: LocalTools;
+  sessions: SessionStore;
 }
 
-export function createApp(config: Config): App {
-  const logger = createLogger(config.logLevel);
-  const repo = new InMemoryItemsRepo();
-  const service = new ItemService(repo);
-
-  const app = express();
-  app.use(express.json());
-  app.use(healthRouter());
-  app.use(itemsRouter(service));
-
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({ error: "route not found" });
-  });
-
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof AppError) {
-      res.status(err.status).json({ error: err.message });
-      return;
-    }
-    logger.error("unhandled error", {
-      detail: err instanceof Error ? err.message : String(err),
+function nativeDriverFor(config: Config, fetchFn?: typeof fetch): Driver | undefined {
+  const provider = config.defaultModel.split("/")[0] ?? "";
+  if (provider === "anthropic" && config.auth.anthropic !== undefined) {
+    return new AnthropicDriver({
+      apiKey: config.auth.anthropic,
+      model: config.defaultModel,
+      fetchFn,
     });
-    res.status(500).json({ error: "internal server error" });
-  });
+  }
+  return undefined;
+}
 
-  return { app, logger };
+export function createApp(
+  config: Config,
+  overrides: { driver?: Driver; fetchFn?: typeof fetch } = {},
+): FlowApp {
+  const logger = createLogger(config.logLevel);
+  const rule = matchRouting(config.routing, config.defaultModel);
+  const driver =
+    overrides.driver ??
+    nativeDriverFor(config, overrides.fetchFn) ??
+    new MockDriver(
+      rule.driver === "native"
+        ? config.defaultModel
+        : `${config.defaultModel} (mock: no key, M6 adds CLI passthrough)`,
+    );
+  const tools = new LocalTools(config.projectDir);
+  const sessions = new SessionStore(config.dataDir, config.projectDir);
+  logger.debug("app created", { model: config.defaultModel, driver: driver.id });
+  return { config, logger, driver, tools, sessions };
 }

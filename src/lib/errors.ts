@@ -19,3 +19,24 @@ export class ValidationError extends AppError {
     super(message, 422);
   }
 }
+
+export class AuthError extends AppError {
+  constructor(message: string) {
+    super(message, 401);
+  }
+}
+
+export class QuotaError extends AppError {
+  constructor(
+    message: string,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message, 429);
+  }
+}
+
+export class DriverError extends AppError {
+  constructor(message: string) {
+    super(message, 502);
+  }
+}

@@ -8,24 +8,19 @@
   },
   "scripts": {
     "setup": "npm install",
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx src/index.ts --help",
     "test": "vitest run",
     "lint": "eslint . && tsc --noEmit",
     "format": "prettier --write .",
     "build": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json"
   },
-  "dependencies": {
-    "express": "^5"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@eslint/js": "^9",
-    "@types/express": "^5",
     "@types/node": "^24",
-    "@types/supertest": "^6",
     "eslint": "^9",
     "eslint-config-prettier": "^10",
     "prettier": "^3",
-    "supertest": "^7",
     "tsc-alias": "^1",
     "tsx": "^4",
     "typescript": "^5",
