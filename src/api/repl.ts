@@ -5,9 +5,12 @@ import { helpText } from "@/api/cli";
 import { runDoctor } from "@/api/doctor";
 import type { ChatMessage } from "@/domain/models";
 import { findCommand } from "@/domain/commands";
+import { compactHistory } from "@/domain/compaction";
+import { findModel } from "@/domain/modelRegistry";
 import { checkPermission, parseRule } from "@/domain/permissions";
 import type { PermissionMode, PermissionRule } from "@/domain/permissions";
 import { sessionPreview } from "@/domain/sessions";
+import { buildContextUsage, renderContextBars } from "@/domain/tokenizer";
 import { TOOL_DESCRIPTIONS, type ToolName } from "@/domain/toolDefs";
 import { loadPermissionRules, saveRule } from "@/infrastructure/permissionStore";
 
@@ -101,6 +104,11 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
         history.push({ role: "assistant", content: text });
         app.sessions.append(sessionId, { type: "assistant", text });
       }
+      if (maybeCompact(app, sessionId, history)) {
+        process.stdout.write(
+          `[auto-compact at ${Math.round(app.config.compactThreshold * 100)}%: transcript summarized, recent window kept]\n`,
+        );
+      }
     } catch (err) {
       process.stdout.write(`\nerror: ${err instanceof Error ? err.message : String(err)}\n`);
       app.sessions.append(sessionId, { type: "error", message: String(err) });
@@ -109,6 +117,29 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
     rl.prompt();
   }
   return 0;
+}
+
+function contextWindowOf(app: FlowApp): number {
+  const base = app.driver.id.split(" (")[0] ?? app.driver.id;
+  return findModel(app.config.models, base)?.contextWindow ?? 200000;
+}
+
+function usageOf(app: FlowApp, history: ChatMessage[]) {
+  return buildContextUsage(
+    { system: "", tools: "", memory: "", skills: "", mcp: "", messages: history },
+    contextWindowOf(app),
+  );
+}
+
+function maybeCompact(app: FlowApp, sessionId: string, history: ChatMessage[]): boolean {
+  const result = compactHistory(history, contextWindowOf(app), app.config.compactThreshold);
+  history.length = 0;
+  history.push(...result.history);
+  if (result.compacted) {
+    app.sessions.append(sessionId, { type: "compact", summary: result.summary });
+    return true;
+  }
+  return false;
 }
 
 function resolveSession(app: FlowApp, opts: ReplOptions): string {
@@ -225,9 +256,30 @@ async function runSlash(
       return "exit";
     case "help":
       process.stdout.write(
-        `${helpText()}\n\nREPL: /clear /model /models /permissions /sessions /resume /doctor plus /read /write /edit /bash /glob /grep\n`,
+        `${helpText()}\n\nREPL: /clear /context /compact [focus] /model /models /permissions /sessions /resume /doctor plus /read /write /edit /bash /glob /grep\n`,
       );
       return "continue";
+    case "context": {
+      const usage = usageOf(app, history);
+      process.stdout.write(
+        `${renderContextBars(usage)}\n(each agent compacts independently; the blackboard persists)\n`,
+      );
+      return "continue";
+    }
+    case "compact": {
+      const result = compactHistory(
+        history,
+        contextWindowOf(app),
+        0,
+        10,
+        arg === "" ? undefined : arg,
+      );
+      history.length = 0;
+      history.push(...result.history);
+      app.sessions.append(sessionId, { type: "compact", manual: true, summary: result.summary });
+      process.stdout.write("compacted: summary pinned, recent window kept.\n");
+      return "continue";
+    }
     case "clear":
       history.length = 0;
       app.sessions.append(sessionId, { type: "clear" });

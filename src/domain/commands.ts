@@ -9,8 +9,8 @@ export interface SlashCommand {
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "help", description: "Show help and available commands.", status: "ready" },
   { name: "clear", description: "Start a fresh conversation.", status: "ready" },
-  { name: "compact", description: "Summarize the transcript to free context.", status: "m3" },
-  { name: "context", description: "Show per-agent context usage bars.", status: "m3" },
+  { name: "compact", description: "Summarize the transcript to free context.", status: "ready" },
+  { name: "context", description: "Show per-agent context usage bars.", status: "ready" },
   { name: "model", description: "Show the active model.", status: "ready" },
   { name: "models", description: "List registry models.", status: "ready" },
   { name: "agents", description: "Manage agents (multi-agent view).", status: "m4" },
