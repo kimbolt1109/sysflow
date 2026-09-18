@@ -15,13 +15,24 @@ export function themeByName(name: string): Theme | undefined {
   return THEMES.find((t) => t.name === name);
 }
 
-export function detectTheme(env: NodeJS.ProcessEnv): { theme: Theme; color: boolean } {
-  if (env.NO_COLOR !== undefined && env.NO_COLOR !== "") {
-    return { theme: THEMES[0] as Theme, color: false };
-  }
-  const wantsTruecolor = env.COLORTERM === "truecolor" || env.COLORTERM === "24bit";
-  const name = env.FLOW_THEME ?? (wantsTruecolor ? "dark" : "default");
+export interface ThemePreference {
+  themeName?: string;
+  color: boolean;
+  truecolor: boolean;
+}
+
+export function selectTheme(pref: ThemePreference): { theme: Theme; color: boolean } {
+  if (!pref.color) return { theme: THEMES[0] as Theme, color: false };
+  const name = pref.themeName ?? (pref.truecolor ? "dark" : "default");
   return { theme: themeByName(name) ?? (THEMES[0] as Theme), color: true };
+}
+
+export function detectTheme(env: NodeJS.ProcessEnv): { theme: Theme; color: boolean } {
+  return selectTheme({
+    themeName: env.APP_FLOW_THEME,
+    color: env.NO_COLOR === undefined || env.NO_COLOR === "",
+    truecolor: env.COLORTERM === "truecolor" || env.COLORTERM === "24bit",
+  });
 }
 
 export function badgeWith(theme: Theme, color: boolean, name: string, index: number): string {

@@ -7,7 +7,7 @@ import { runDoctor } from "@/api/doctor";
 import { formatHeadless, runHeadless } from "@/api/headless";
 import { startRepl } from "@/api/repl";
 import { runSelector } from "@/api/selector";
-import { detectTheme } from "@/api/theming";
+import { selectTheme } from "@/api/theming";
 import { loadConfig } from "@/config";
 import { checkPermission } from "@/domain/permissions";
 import { matchRouting } from "@/domain/routing";
@@ -15,7 +15,6 @@ import { sessionPreview } from "@/domain/sessions";
 import type { ToolCheck } from "@/infrastructure/agentLoop";
 import { findOnPath, passthrough } from "@/infrastructure/cliDrivers";
 import { removeMcpServer, saveMcpServer } from "@/infrastructure/mcpClients";
-import { resolveEditor } from "@/infrastructure/memoryStore";
 import { loadPermissionRules } from "@/infrastructure/permissionStore";
 import { userSettingsPath, writeUserDefaultModel } from "@/infrastructure/userSettings";
 import { AppError } from "@/lib/errors";
@@ -108,7 +107,11 @@ async function main(): Promise<number> {
       try {
         const council = buildCouncil(app, args, [], "council");
         if (council !== undefined) {
-          const detected = detectTheme(process.env);
+          const detected = selectTheme({
+            themeName: config.uiTheme,
+            color: !config.noColor,
+            truecolor: config.truecolor,
+          });
           council.theme = detected.theme;
           council.color = detected.color;
         }
@@ -162,7 +165,11 @@ async function main(): Promise<number> {
         const exit = await maybePassthrough(config.defaultModel, app, args.passthrough);
         if (exit !== undefined) return exit;
       }
-      const detected = detectTheme(process.env);
+      const detected = selectTheme({
+        themeName: config.uiTheme,
+        color: !config.noColor,
+        truecolor: config.truecolor,
+      });
       return startRepl(app, {
         resume: args.resume,
         continueLatest: args.continueLatest,
@@ -171,7 +178,7 @@ async function main(): Promise<number> {
         agents: council === undefined ? undefined : council.agents,
         councilMode: council?.mode,
         councilLead: council?.lead,
-        editor: resolveEditor(process.env),
+        editor: config.editor,
         theme: detected.theme,
         color: detected.color,
         notify: args.notify,
@@ -238,7 +245,7 @@ async function cmdConfig(app: FlowApp, rest: string[]): Promise<number> {
     return 0;
   }
   if (sub === "edit") {
-    app.editPath(userSettingsPath(app.config.dataDir), resolveEditor(process.env));
+    app.editPath(userSettingsPath(app.config.dataDir), app.config.editor);
     return 0;
   }
   process.stderr.write("usage: flow config [get [key]|set defaultModel <id>|edit]\n");

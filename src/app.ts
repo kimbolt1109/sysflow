@@ -1,6 +1,6 @@
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import type { Config } from "@/config";
@@ -40,6 +40,7 @@ import {
   findLegacyImport,
   importOfferedMarker,
   loadMemoryFiles,
+  openInEditor,
   writeProjectMemory,
 } from "@/infrastructure/memoryStore";
 import { MockDriver } from "@/infrastructure/mockDriver";
@@ -88,6 +89,8 @@ export interface FlowApp {
   markImportOffered(): void;
   savePermissionRule(rule: PermissionRule): void;
   editPath(path: string, editor: string): void;
+  editTempContent(content: string, editor: string): string;
+  reloadExtensions(): { skills: number; subagents: number; commands: number };
   runSubagent(name: string, prompt: string, emit?: (text: string) => void): Promise<string>;
   recordUsage(provider: string, modelId: string, input: number, output: number): UsageRecord;
   dailyUsage(): DailyUsage;
@@ -242,6 +245,17 @@ export function createApp(
     editPath: (path, editor) => {
       spawnSync(editor, [path], { stdio: "inherit" });
     },
+    editTempContent: (content, editor) => editTempContent(content, editor),
+    reloadExtensions: () => {
+      app.skills = discoverSkills(config.dataDir, config.projectDir);
+      app.subagents = discoverSubagents(config.dataDir, config.projectDir);
+      app.customCommands = discoverCommands(config.dataDir, config.projectDir);
+      return {
+        skills: app.skills.length,
+        subagents: app.subagents.length,
+        commands: app.customCommands.length,
+      };
+    },
     runSubagent: (name, prompt, emit) =>
       runSubagentTask({ driver, tools, subagents, mcp }, name, prompt, emit),
     dailyUsage: () => loadDailyUsage(config.dataDir),
@@ -342,6 +356,21 @@ function existsMarker(projectDir: string): boolean {
 function writeMarker(projectDir: string): void {
   mkdirSync(join(projectDir, ".flow"), { recursive: true });
   writeFileSync(importOfferedMarker(projectDir), "offered\n", "utf8");
+}
+
+function editTempContent(content: string, editor: string): string {
+  const tmp = join(tmpdir(), `flow-edit-${randomUUID()}.md`);
+  writeFileSync(tmp, content, "utf8");
+  try {
+    openInEditor(tmp, editor);
+    return readFileSync(tmp, "utf8");
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // best-effort cleanup
+    }
+  }
 }
 
 function recordUsage(

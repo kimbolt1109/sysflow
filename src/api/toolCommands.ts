@@ -4,6 +4,8 @@ import { checkPermission } from "@/domain/permissions";
 import type { PermissionMode, PermissionRule } from "@/domain/permissions";
 import { TOOL_DESCRIPTIONS, type ToolName } from "@/domain/toolDefs";
 
+export type ConfirmVerdict = "allow" | "deny" | "edit";
+
 export function toolLabel(name: ToolName): string {
   return name[0]?.toUpperCase() + name.slice(1);
 }
@@ -32,7 +34,8 @@ export async function confirmTool(
   tool: string,
   target: Record<string, unknown>,
   pattern: string,
-): Promise<boolean> {
+  editable = false,
+): Promise<ConfirmVerdict> {
   const hook = await app.hooks.fire("PreToolUse", {
     session_id: sessionId,
     tool_name: tool,
@@ -41,28 +44,43 @@ export async function confirmTool(
   if (hook.decision === "block") {
     process.stdout.write(`hook blocked ${tool}: ${hook.reason}\n`);
     app.sessions.append(sessionId, { type: "tool-blocked", tool, reason: hook.reason });
-    return false;
+    return "deny";
   }
   const decision = checkPermission(mode, rules, tool, target);
   if (decision === "deny") {
     process.stdout.write(`denied by permission rules.\n`);
     app.sessions.append(sessionId, { type: "tool-blocked", tool });
-    return false;
+    return "deny";
   }
   if (decision === "ask") {
-    const answer = await ask(rl, `allow ${tool} ${JSON.stringify(target)}? [y/a(always)/n] `);
+    const hint = editable ? "[y/a(always)/e(edit)/n]" : "[y/a(always)/n]";
+    const answer = await ask(rl, `allow ${tool} ${JSON.stringify(target)}? ${hint} `);
     if (answer === "a") {
       app.savePermissionRule({ tool, pattern, decision: "allow" });
       process.stdout.write("allowed always (saved to .flow/settings.local.json).\n");
-      return true;
+      return "allow";
     }
+    if (answer === "e" && editable) return "edit";
     if (answer !== "y") {
       process.stdout.write("blocked.\n");
       app.sessions.append(sessionId, { type: "tool-blocked", tool });
-      return false;
+      return "deny";
     }
   }
-  return true;
+  return "allow";
+}
+
+async function postTool(
+  app: FlowApp,
+  sessionId: string,
+  tool: string,
+  output: string,
+): Promise<void> {
+  await app.hooks.fire("PostToolUse", {
+    session_id: sessionId,
+    tool_name: tool,
+    output: output.slice(0, 2000),
+  });
 }
 
 export async function runReadTool(
@@ -80,7 +98,9 @@ export async function runReadTool(
   }
   const tool = toolLabel(cmd as ToolName);
   const target = { path: arg, command: arg };
-  if (!(await confirmTool(app, rl, sessionId, mode, rules, tool, target, arg))) return "continue";
+  if ((await confirmTool(app, rl, sessionId, mode, rules, tool, target, arg)) !== "allow") {
+    return "continue";
+  }
   const result =
     cmd === "read"
       ? await app.tools.read(arg)
@@ -89,11 +109,7 @@ export async function runReadTool(
         : await app.tools.grep(arg);
   process.stdout.write(`${result.output === "" ? "(no output)" : result.output}\n`);
   app.sessions.append(sessionId, { type: "tool", tool: cmd, arg, ok: result.ok });
-  await app.hooks.fire("PostToolUse", {
-    session_id: sessionId,
-    tool_name: tool,
-    output: result.output.slice(0, 2000),
-  });
+  await postTool(app, sessionId, tool, result.output);
   return "continue";
 }
 
@@ -105,6 +121,7 @@ export async function runWriteTool(
   rules: PermissionRule[],
   cmd: string,
   arg: string,
+  editor?: string,
 ): Promise<"exit" | "continue"> {
   if (mode === "plan") {
     process.stdout.write("plan mode: writes are disabled (read-only).\n");
@@ -114,7 +131,7 @@ export async function runWriteTool(
   if (cmd === "bash" && arg !== "") {
     const target = { command: arg };
     if (
-      !(await confirmTool(
+      (await confirmTool(
         app,
         rl,
         sessionId,
@@ -123,25 +140,54 @@ export async function runWriteTool(
         "Bash",
         target,
         alwaysAllowPattern("Bash", arg),
-      ))
+      )) !== "allow"
     ) {
       return "continue";
     }
     const result = await app.tools.bash(arg);
     process.stdout.write(`${result.output === "" ? "(no output)" : result.output}\n`);
     app.sessions.append(sessionId, { type: "tool", tool: cmd, ok: result.ok });
-    await app.hooks.fire("PostToolUse", {
-      session_id: sessionId,
-      tool_name: "Bash",
-      output: result.output.slice(0, 2000),
-    });
+    await postTool(app, sessionId, "Bash", result.output);
     return "continue";
   }
   if ((cmd === "write" || cmd === "edit") && parts.length >= 2) {
     const [path, ...contentParts] = parts as [string, ...string[]];
     const tool = toolLabel(cmd as ToolName);
-    if (!(await confirmTool(app, rl, sessionId, mode, rules, tool, { path }, path ?? ""))) {
-      return "continue";
+    let newContent: string;
+    if (cmd === "write") {
+      newContent = contentParts.join(" ");
+    } else {
+      const joined = contentParts.join(" ");
+      const sep = joined.indexOf(" :: ");
+      if (sep < 0) {
+        process.stdout.write("usage: /edit <path> <old> :: <new>\n");
+        return "continue";
+      }
+      newContent = joined.slice(sep + 4);
+    }
+    const verdict = await confirmTool(
+      app,
+      rl,
+      sessionId,
+      mode,
+      rules,
+      tool,
+      { path },
+      path ?? "",
+      true,
+    );
+    if (verdict === "deny") return "continue";
+    if (verdict === "edit") {
+      if (editor === undefined) {
+        process.stdout.write("no editor configured.\n");
+        return "continue";
+      }
+      try {
+        newContent = app.editTempContent(newContent, editor);
+      } catch (err) {
+        process.stdout.write(`edit aborted: ${err instanceof Error ? err.message : String(err)}\n`);
+        return "continue";
+      }
     }
     try {
       await app.takeCheckpoint(sessionId, `before ${cmd} ${path ?? ""}`);
@@ -149,30 +195,18 @@ export async function runWriteTool(
       // checkpoints are best-effort and never block execution
     }
     if (cmd === "write") {
-      const result = await app.tools.write(path ?? "", contentParts.join(" "));
+      const result = await app.tools.write(path ?? "", newContent);
       process.stdout.write(`${result.output}\n`);
       app.sessions.append(sessionId, { type: "tool", tool: cmd, ok: result.ok });
-      await app.hooks.fire("PostToolUse", {
-        session_id: sessionId,
-        tool_name: tool,
-        output: result.output.slice(0, 2000),
-      });
+      await postTool(app, sessionId, tool, result.output);
       return "continue";
     }
     const content = contentParts.join(" ");
     const sep = content.indexOf(" :: ");
-    if (sep < 0) {
-      process.stdout.write("usage: /edit <path> <old> :: <new>\n");
-      return "continue";
-    }
-    const result = await app.tools.edit(path ?? "", content.slice(0, sep), content.slice(sep + 4));
+    const result = await app.tools.edit(path ?? "", content.slice(0, sep), newContent);
     process.stdout.write(`${result.output}\n`);
     app.sessions.append(sessionId, { type: "tool", tool: cmd, ok: result.ok });
-    await app.hooks.fire("PostToolUse", {
-      session_id: sessionId,
-      tool_name: tool,
-      output: result.output.slice(0, 2000),
-    });
+    await postTool(app, sessionId, tool, result.output);
     return "continue";
   }
   process.stdout.write(

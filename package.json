@@ -3,6 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "description": "Flow — unified multi-model, multi-agent AI coding CLI",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "ai",
+    "coding",
+    "cli",
+    "agents",
+    "llm"
+  ],
+  "files": [
+    "dist"
+  ],
   "bin": {
     "flow": "dist/index.js"
   },

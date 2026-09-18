@@ -507,6 +507,78 @@ async function runSlash(
         process.stdout.write(`${id}  ${sessionPreview(app.sessions.load(id))}\n`);
       }
       return "continue";
+    case "fork": {
+      const source = arg === "" ? sessionId : arg;
+      try {
+        const next = app.sessions.fork(source);
+        app.sessions.append(next, { type: "session-forked", from: source });
+        process.stdout.write(`forked → ${next}\n`);
+      } catch (err) {
+        process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      return "continue";
+    }
+    case "new":
+      history.length = 0;
+      sessionId = randomUUID();
+      app.sessions.append(sessionId, { type: "session-start", mode, model: app.driver.id });
+      process.stdout.write(`new session ${sessionId.slice(0, 8)}\n`);
+      return "continue";
+    case "rename":
+      if (arg === "") {
+        process.stdout.write("usage: /rename <name>\n");
+        return "continue";
+      }
+      try {
+        sessionId = app.sessions.rename(sessionId, arg);
+        process.stdout.write(`renamed → ${sessionId}\n`);
+      } catch (err) {
+        process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      return "continue";
+    case "copy": {
+      const [nthRaw, ...pathParts] = arg.split(/\s+/).filter((p) => p !== "");
+      const nth = nthRaw === undefined || nthRaw === "" ? 1 : Number(nthRaw);
+      const responses = history.filter((m) => m.role === "assistant").map((m) => m.content);
+      const picked = responses[responses.length - (Number.isInteger(nth) ? nth : 1)];
+      if (picked === undefined) {
+        process.stdout.write("nothing to copy yet.\n");
+        return "continue";
+      }
+      const target = pathParts.join(" ");
+      if (target === "") {
+        process.stdout.write(`${picked}\n(copied to output — clipboard needs a TTY helper)\n`);
+        return "continue";
+      }
+      const result = await app.tools.write(target, picked);
+      process.stdout.write(`${result.output}\n`);
+      return "continue";
+    }
+    case "tasks": {
+      const counts = new Map<string, number>();
+      for (const record of app.sessions.load(sessionId)) {
+        const type =
+          typeof record === "object" && record !== null
+            ? String((record as Record<string, unknown>).type ?? "unknown")
+            : "unknown";
+        counts.set(type, (counts.get(type) ?? 0) + 1);
+      }
+      if (counts.size === 0) {
+        process.stdout.write("no activity yet.\n");
+        return "continue";
+      }
+      for (const [type, count] of [...counts.entries()].sort()) {
+        process.stdout.write(`${type}: ${count}\n`);
+      }
+      return "continue";
+    }
+    case "reload": {
+      const counts = app.reloadExtensions();
+      process.stdout.write(
+        `reloaded: ${counts.skills} skills, ${counts.subagents} subagents, ${counts.commands} commands.\n`,
+      );
+      return "continue";
+    }
     case "doctor":
       await runDoctor(app);
       return "continue";
@@ -593,7 +665,7 @@ async function runSlash(
     case "write":
     case "edit":
     case "bash":
-      return runWriteTool(app, rl, sessionId, mode, rules, cmd, arg);
+      return runWriteTool(app, rl, sessionId, mode, rules, cmd, arg, opts.editor);
     default: {
       const custom = app.customCommands.find((c) => c.name === cmd);
       if (custom !== undefined) {

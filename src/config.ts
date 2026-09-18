@@ -23,6 +23,10 @@ export interface Config {
   compactThreshold: number;
   quotaThresholds: BudgetThresholds;
   ollamaBaseUrl: string;
+  editor: string;
+  uiTheme?: string;
+  noColor: boolean;
+  truecolor: boolean;
   auth: FlowAuth;
 }
 
@@ -208,6 +212,13 @@ export function loadConfig(
       env.APP_OLLAMA_BASE_URL && env.APP_OLLAMA_BASE_URL !== ""
         ? env.APP_OLLAMA_BASE_URL
         : "http://localhost:11434/v1",
+    editor:
+      nonempty(env.EDITOR) ??
+      nonempty(env.VISUAL) ??
+      (process.platform === "win32" ? "notepad" : "vi"),
+    uiTheme: nonempty(env.APP_FLOW_THEME),
+    noColor: nonempty(env.NO_COLOR) !== undefined,
+    truecolor: env.COLORTERM === "truecolor" || env.COLORTERM === "24bit",
     auth: {
       anthropic: nonempty(env.APP_ANTHROPIC_API_KEY),
       openai: nonempty(env.APP_OPENAI_API_KEY),

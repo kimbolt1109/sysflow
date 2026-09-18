@@ -46,10 +46,6 @@ export function writeProjectMemory(projectDir: string, content: string): string 
   return path;
 }
 
-export function resolveEditor(env: NodeJS.ProcessEnv): string {
-  return env.EDITOR ?? env.VISUAL ?? (process.platform === "win32" ? "notepad" : "vi");
-}
-
 export function openInEditor(path: string, editor: string): void {
   spawnSync(editor, [path], { stdio: "inherit" });
 }

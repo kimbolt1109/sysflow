@@ -96,11 +96,15 @@ prettier + eslint + tsc + vitest. Commit lockfiles.
 8. Run `format`, `lint`, `test` — all must pass before commit. Record hard-to-reverse
    decisions in `docs/adr/NNN-title.md`.
 
-## Template addendum — flow (scaffolded from ts-api, adapting to CLI per §9)
+## Template addendum — flow (scaffolded from ts-api, adapted to CLI per §9 + ADR 003)
 
 - Entry point: `src/index.ts` (thin bootstrap); `src/app.ts` is the composition root factory `createApp(config)`.
 - Build is plain `tsc` to CommonJS in `dist/`; `tsc-alias` rewrites `@/` aliases — no bundler.
-- Run the compiled server with `node dist/index.js`; `npm run dev` uses `tsx watch`.
+- Run the built CLI with `node dist/index.js`; `npm run dev` prints `--help` (one-shot CLI).
 - `eslint.config.js` uses `require()` because this package is CommonJS (no `"type": "module"`).
-- `InMemoryItemsRepo` is the default `ItemsRepo` port implementation; swap adapters in `src/app.ts` only.
-- CLI adaptation (Path B): `src/api/` hosts CLI commands (commander-style argv parsing) over `domain/`; `src/app.ts` remains the only composition root. The Express items example is skeleton-only and will be deleted when the first real Flow feature (M1 config + REPL) lands. Binary name is `flow` via `package.json:bin` (`flow-ai-cli` package).
+- `src/api/` hosts CLI command modules over `domain/`; runtime composition lives only in
+  `src/app.ts` + `src/index.ts`. `api/` may use `import type` from infrastructure/app
+  (erased at runtime); values flow via `FlowApp`. Domain ports (`Driver`, `ToolsPort`,
+  `McpPort`, `HooksPort`) are implemented in `infrastructure/`.
+- TUI is `node:readline` (Ink deferred per ADR 003 — ESM/CJS cutover). Binary name is
+  `flow` via `package.json:bin` (`flow-ai-cli` package, ADR 004).

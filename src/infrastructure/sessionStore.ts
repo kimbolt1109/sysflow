@@ -1,5 +1,14 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+} from "node:fs";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { projectHash } from "@/domain/sessions";
 
 export class SessionStore {
@@ -36,5 +45,25 @@ export class SessionStore {
       .filter((name) => name.endsWith(".jsonl"))
       .map((name) => name.slice(0, -".jsonl".length))
       .sort();
+  }
+
+  fork(sessionId: string): string {
+    const source = this.path(sessionId);
+    if (!existsSync(source)) throw new Error(`unknown session "${sessionId}"`);
+    const next = randomUUID();
+    mkdirSync(this.dir(), { recursive: true });
+    copyFileSync(source, this.path(next));
+    return next;
+  }
+
+  rename(sessionId: string, name: string): string {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) {
+      throw new Error(`invalid session name "${name}" (letters, digits, -, _)`);
+    }
+    const source = this.path(sessionId);
+    if (!existsSync(source)) throw new Error(`unknown session "${sessionId}"`);
+    if (existsSync(this.path(name))) throw new Error(`session "${name}" already exists`);
+    renameSync(source, this.path(name));
+    return name;
   }
 }

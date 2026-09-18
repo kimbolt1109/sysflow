@@ -34,4 +34,16 @@ describe("SessionStore", () => {
 
     expect(store.list()).toEqual(["a", "b"]);
   });
+
+  it("forks and renames sessions", () => {
+    store.append("s1", { type: "user", text: "hi" });
+
+    const forked = store.fork("s1");
+    expect(store.load(forked)).toEqual([{ type: "user", text: "hi" }]);
+    expect(() => store.fork("missing")).toThrow("unknown session");
+
+    expect(store.rename("s1", "renamed")).toBe("renamed");
+    expect(store.list()).toContain("renamed");
+    expect(() => store.rename("renamed", "bad name!")).toThrow("invalid session name");
+  });
 });

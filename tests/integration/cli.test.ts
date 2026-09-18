@@ -73,8 +73,13 @@ describe("cli integration", () => {
   it("records usage cost and enforces --max-cost", async () => {
     const config = loadConfig({ APP_DATA_DIR: data, APP_LOG_LEVEL: "error" }, { cwd: proj });
     config.defaultModel = "anthropic/claude-sonnet";
+    const mock = new MockDriver("mock/big");
     const pricey: Driver = {
-      ...new MockDriver("mock/big"),
+      id: mock.id,
+      kind: mock.kind,
+      countTokens: (text) => mock.countTokens(text),
+      getQuota: () => mock.getQuota(),
+      healthCheck: () => mock.healthCheck(),
       sendMessage: async () => ({ text: "big", usage: { input: 1_000_000, output: 0 } }),
       streamMessage: async () => ({ text: "big", usage: { input: 1_000_000, output: 0 } }),
     };
@@ -85,7 +90,9 @@ describe("cli integration", () => {
     });
 
     expect(result.cost).toBeCloseTo(3);
-    expect(app.dailyUsage().providers[Object.keys(app.dailyUsage().providers)[0] as string]?.cost).toBeCloseTo(3);
+    expect(
+      app.dailyUsage().providers[Object.keys(app.dailyUsage().providers)[0] as string]?.cost,
+    ).toBeCloseTo(3);
 
     await expect(
       runHeadless(app, parseArgv(["-p", "hi", "--max-cost", "1"]), () => {}, undefined, {
