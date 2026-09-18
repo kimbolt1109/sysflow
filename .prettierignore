@@ -1,2 +1,4 @@
 # CLAUDE.md is an exact copy of the conventions kit and must not be reflowed
 CLAUDE.md
+# spec research clones (gitignored) — never format
+research/

@@ -10,5 +10,8 @@ coverage/
 # local environment — never commit secrets
 .env
 
+# spec research clones (see docs/ARCHITECTURE.md) — never commit
+research/
+
 # incremental compiler state
 *.tsbuildinfo
