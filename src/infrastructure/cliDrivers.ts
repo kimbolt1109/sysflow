@@ -83,7 +83,16 @@ export function isDirectPath(command: string): boolean {
   return command.includes("/") || command.includes("\\");
 }
 
+const pathCache = new Map<string, string | undefined>();
+
 export function findOnPath(command: string): string | undefined {
+  if (pathCache.has(command)) return pathCache.get(command);
+  const found = findOnPathUncached(command);
+  pathCache.set(command, found);
+  return found;
+}
+
+function findOnPathUncached(command: string): string | undefined {
   const probe = process.platform === "win32" ? "where" : "which";
   try {
     const found = spawnSync(probe, [command], { encoding: "utf8", timeout: 5000 });
