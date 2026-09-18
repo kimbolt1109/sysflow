@@ -4,6 +4,12 @@ import { matchRouting } from "@/domain/routing";
 import { LocalTools } from "@/infrastructure/localTools";
 import { MockDriver } from "@/infrastructure/mockDriver";
 import { AnthropicDriver } from "@/infrastructure/nativeAnthropic";
+import { GoogleDriver } from "@/infrastructure/nativeGoogle";
+import {
+  createOllamaDriver,
+  createOpenaiDriver,
+  createOpenrouterDriver,
+} from "@/infrastructure/openaiCompat";
 import { SessionStore } from "@/infrastructure/sessionStore";
 import { createLogger, type Logger } from "@/lib/logger";
 
@@ -23,6 +29,18 @@ function nativeDriverFor(config: Config, fetchFn?: typeof fetch): Driver | undef
       model: config.defaultModel,
       fetchFn,
     });
+  }
+  if (provider === "openai" && config.auth.openai !== undefined) {
+    return createOpenaiDriver(config.defaultModel, config.auth.openai, fetchFn);
+  }
+  if (provider === "google" && config.auth.google !== undefined) {
+    return new GoogleDriver({ apiKey: config.auth.google, model: config.defaultModel, fetchFn });
+  }
+  if (provider === "openrouter" && config.auth.openrouter !== undefined) {
+    return createOpenrouterDriver(config.defaultModel, config.auth.openrouter, fetchFn);
+  }
+  if (provider === "ollama") {
+    return createOllamaDriver(config.defaultModel, config.ollamaBaseUrl, fetchFn);
   }
   return undefined;
 }

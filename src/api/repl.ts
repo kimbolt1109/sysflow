@@ -2,10 +2,14 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import type { FlowApp } from "@/app";
 import { helpText } from "@/api/cli";
+import { runDoctor } from "@/api/doctor";
 import type { ChatMessage } from "@/domain/models";
-import { checkPermission } from "@/domain/permissions";
-import type { PermissionMode } from "@/domain/permissions";
+import { findCommand } from "@/domain/commands";
+import { checkPermission, parseRule } from "@/domain/permissions";
+import type { PermissionMode, PermissionRule } from "@/domain/permissions";
+import { sessionPreview } from "@/domain/sessions";
 import { TOOL_DESCRIPTIONS, type ToolName } from "@/domain/toolDefs";
+import { loadPermissionRules, saveRule } from "@/infrastructure/permissionStore";
 
 export interface ReplOptions {
   resume?: string;
@@ -18,11 +22,21 @@ function toolLabel(name: ToolName): string {
   return name[0]?.toUpperCase() + name.slice(1);
 }
 
+function alwaysAllowPattern(tool: string, target: string): string {
+  if (tool === "Bash") {
+    const words = target.split(/\s+/).filter((w) => w !== "");
+    const head = words.slice(0, 2).join(" ");
+    return `${head === "" ? "*" : head}:*`;
+  }
+  return target === "" ? "*" : target;
+}
+
 export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number> {
   const mode: PermissionMode = opts.dangerouslySkip
     ? "bypassPermissions"
     : (opts.permissionMode ?? "default");
-  const sessionId = resolveSession(app, opts);
+  const rules = loadPermissionRules(app.config.dataDir, app.config.projectDir);
+  let sessionId = resolveSession(app, opts);
   const history: ChatMessage[] = loadHistory(app, sessionId);
   app.sessions.append(sessionId, { type: "session-start", mode, model: app.driver.id });
 
@@ -55,8 +69,13 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
       rl.prompt();
       continue;
     }
+    if (input === "/resume" || input.startsWith("/resume ")) {
+      sessionId = resumeInPlace(app, sessionId, history, input.slice("/resume".length).trim());
+      rl.prompt();
+      continue;
+    }
     if (input.startsWith("/")) {
-      const done = await runSlash(app, rl, sessionId, history, mode, input);
+      const done = await runSlash(app, rl, sessionId, history, mode, rules, input);
       if (done === "exit") {
         rl.close();
         return 0;
@@ -122,10 +141,71 @@ function loadHistory(app: FlowApp, sessionId: string): ChatMessage[] {
   return history;
 }
 
+function resumeInPlace(
+  app: FlowApp,
+  sessionId: string,
+  history: ChatMessage[],
+  arg: string,
+): string {
+  const ids = app.sessions.list();
+  let target = arg;
+  if (target === "") {
+    const last = ids[ids.length - 1];
+    if (last === undefined) {
+      process.stdout.write("no sessions yet.\n");
+      return sessionId;
+    }
+    target = last;
+  }
+  if (!ids.includes(target)) {
+    process.stdout.write(`unknown session "${target}" — try /sessions\n`);
+    return sessionId;
+  }
+  history.length = 0;
+  history.push(...loadHistory(app, target));
+  app.sessions.append(target, { type: "session-resumed" });
+  process.stdout.write(`resumed ${target}: ${sessionPreview(app.sessions.load(target))}\n`);
+  return target;
+}
+
 async function ask(rl: ReturnType<typeof createInterface>, question: string): Promise<string> {
   return new Promise((resolvePromise) => {
     rl.question(question, (answer) => resolvePromise(answer.trim().toLowerCase()));
   });
+}
+
+async function confirmTool(
+  app: FlowApp,
+  rl: ReturnType<typeof createInterface>,
+  sessionId: string,
+  mode: PermissionMode,
+  rules: PermissionRule[],
+  tool: string,
+  target: Record<string, unknown>,
+  pattern: string,
+): Promise<boolean> {
+  const decision = checkPermission(mode, rules, tool, target);
+  if (decision === "deny") {
+    process.stdout.write(`denied by permission rules.\n`);
+    app.sessions.append(sessionId, { type: "tool-blocked", tool });
+    return false;
+  }
+  if (decision === "ask") {
+    const answer = await ask(rl, `allow ${tool} ${JSON.stringify(target)}? [y/a(always)/n] `);
+    if (answer === "a") {
+      const rule = { tool, pattern, decision: "allow" as const };
+      saveRule(app.config.projectDir, rule);
+      rules.push(rule);
+      process.stdout.write("allowed always (saved to .flow/settings.local.json).\n");
+      return true;
+    }
+    if (answer !== "y") {
+      process.stdout.write("blocked.\n");
+      app.sessions.append(sessionId, { type: "tool-blocked", tool });
+      return false;
+    }
+  }
+  return true;
 }
 
 async function runSlash(
@@ -134,6 +214,7 @@ async function runSlash(
   sessionId: string,
   history: ChatMessage[],
   mode: PermissionMode,
+  rules: PermissionRule[],
   input: string,
 ): Promise<"exit" | "continue"> {
   const [cmd, ...rest] = input.slice(1).split(/\s+/);
@@ -144,7 +225,7 @@ async function runSlash(
       return "exit";
     case "help":
       process.stdout.write(
-        `${helpText()}\n\nREPL: /clear /model [id] /models plus /read /write /edit /bash /glob /grep\n`,
+        `${helpText()}\n\nREPL: /clear /model /models /permissions /sessions /resume /doctor plus /read /write /edit /bash /glob /grep\n`,
       );
       return "continue";
     case "clear":
@@ -154,7 +235,7 @@ async function runSlash(
       return "continue";
     case "model":
       process.stdout.write(
-        `model: ${app.driver.id}${arg !== "" ? ` (switch to "${arg}" needs restart: flow --model ${arg})` : ""}\n`,
+        `model: ${app.driver.id}${arg !== "" ? ` (switch with: flow --model ${arg})` : ""}\n`,
       );
       return "continue";
     case "models":
@@ -164,17 +245,57 @@ async function runSlash(
         );
       }
       return "continue";
+    case "permissions": {
+      if (arg === "") {
+        process.stdout.write(`mode: ${mode}\n`);
+        if (rules.length === 0) process.stdout.write("(no custom rules)\n");
+        for (const r of rules) {
+          process.stdout.write(`- ${r.decision} ${r.tool}(${r.pattern})\n`);
+        }
+        return "continue";
+      }
+      const [decision, ...ruleParts] = arg.split(/\s+/);
+      if (decision !== "allow" && decision !== "deny" && decision !== "ask") {
+        process.stdout.write("usage: /permissions [allow|deny|ask Tool(pattern)]\n");
+        return "continue";
+      }
+      try {
+        const rule = parseRule(ruleParts.join(" "), decision);
+        saveRule(app.config.projectDir, rule);
+        rules.push(rule);
+        process.stdout.write(`saved ${decision} ${rule.tool}(${rule.pattern}).\n`);
+      } catch (err) {
+        process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      return "continue";
+    }
+    case "sessions":
+      for (const id of app.sessions.list()) {
+        process.stdout.write(`${id}  ${sessionPreview(app.sessions.load(id))}\n`);
+      }
+      return "continue";
+    case "doctor":
+      runDoctor(app);
+      return "continue";
     case "read":
     case "glob":
     case "grep":
-      return runReadTool(app, rl, sessionId, mode, cmd, arg);
+      return runReadTool(app, rl, sessionId, mode, rules, cmd, arg);
     case "write":
     case "edit":
     case "bash":
-      return runWriteTool(app, rl, sessionId, mode, cmd, arg);
-    default:
-      process.stdout.write(`unknown command /${cmd ?? ""} — try /help\n`);
+      return runWriteTool(app, rl, sessionId, mode, rules, cmd, arg);
+    default: {
+      const known = findCommand(cmd ?? "");
+      if (known !== undefined) {
+        process.stdout.write(
+          `/${known.name}: ${known.description} Lands in ${known.status.toUpperCase()}.\n`,
+        );
+      } else {
+        process.stdout.write(`unknown command /${cmd ?? ""} — try /help\n`);
+      }
       return "continue";
+    }
   }
 }
 
@@ -183,6 +304,7 @@ async function runReadTool(
   rl: ReturnType<typeof createInterface>,
   sessionId: string,
   mode: PermissionMode,
+  rules: PermissionRule[],
   cmd: string,
   arg: string,
 ): Promise<"exit" | "continue"> {
@@ -191,11 +313,8 @@ async function runReadTool(
     return "continue";
   }
   const tool = toolLabel(cmd as ToolName);
-  const decision = checkPermission(mode, [], tool, { path: arg, command: arg });
-  if (decision === "ask" && (await ask(rl, `allow ${tool}(${arg})? [y/n] `)) !== "y") {
-    process.stdout.write("blocked.\n");
-    return "continue";
-  }
+  const target = { path: arg, command: arg };
+  if (!(await confirmTool(app, rl, sessionId, mode, rules, tool, target, arg))) return "continue";
   const result =
     cmd === "read"
       ? await app.tools.read(arg)
@@ -212,64 +331,61 @@ async function runWriteTool(
   rl: ReturnType<typeof createInterface>,
   sessionId: string,
   mode: PermissionMode,
+  rules: PermissionRule[],
   cmd: string,
   arg: string,
 ): Promise<"exit" | "continue"> {
+  if (mode === "plan") {
+    process.stdout.write("plan mode: writes are disabled (read-only).\n");
+    return "continue";
+  }
   const parts = arg.split(/\s+/).filter((p) => p !== "");
   if (cmd === "bash" && arg !== "") {
-    return confirmAndRun(app, rl, sessionId, mode, "Bash", { command: arg }, () =>
-      app.tools.bash(arg),
-    );
+    const target = { command: arg };
+    if (
+      !(await confirmTool(
+        app,
+        rl,
+        sessionId,
+        mode,
+        rules,
+        "Bash",
+        target,
+        alwaysAllowPattern("Bash", arg),
+      ))
+    ) {
+      return "continue";
+    }
+    const result = await app.tools.bash(arg);
+    process.stdout.write(`${result.output === "" ? "(no output)" : result.output}\n`);
+    app.sessions.append(sessionId, { type: "tool", tool: cmd, ok: result.ok });
+    return "continue";
   }
   if ((cmd === "write" || cmd === "edit") && parts.length >= 2) {
     const [path, ...contentParts] = parts as [string, ...string[]];
-    const content = contentParts.join(" ");
-    if (cmd === "write") {
-      return confirmAndRun(app, rl, sessionId, mode, "Write", { path }, () =>
-        app.tools.write(path ?? "", content),
-      );
+    const tool = toolLabel(cmd as ToolName);
+    if (!(await confirmTool(app, rl, sessionId, mode, rules, tool, { path }, path ?? ""))) {
+      return "continue";
     }
+    if (cmd === "write") {
+      const result = await app.tools.write(path ?? "", contentParts.join(" "));
+      process.stdout.write(`${result.output}\n`);
+      app.sessions.append(sessionId, { type: "tool", tool: cmd, ok: result.ok });
+      return "continue";
+    }
+    const content = contentParts.join(" ");
     const sep = content.indexOf(" :: ");
     if (sep < 0) {
       process.stdout.write("usage: /edit <path> <old> :: <new>\n");
       return "continue";
     }
-    const oldString = content.slice(0, sep);
-    const newString = content.slice(sep + 4);
-    return confirmAndRun(app, rl, sessionId, mode, "Edit", { path }, () =>
-      app.tools.edit(path ?? "", oldString, newString),
-    );
+    const result = await app.tools.edit(path ?? "", content.slice(0, sep), content.slice(sep + 4));
+    process.stdout.write(`${result.output}\n`);
+    app.sessions.append(sessionId, { type: "tool", tool: cmd, ok: result.ok });
+    return "continue";
   }
   process.stdout.write(
     cmd === "bash" ? "usage: /bash <command>\n" : `usage: /${cmd} <path> <content...>\n`,
   );
-  return "continue";
-}
-
-async function confirmAndRun(
-  app: FlowApp,
-  rl: ReturnType<typeof createInterface>,
-  sessionId: string,
-  mode: PermissionMode,
-  tool: string,
-  target: Record<string, unknown>,
-  run: () => Promise<{ ok: boolean; output: string }>,
-): Promise<"exit" | "continue"> {
-  const decision = checkPermission(mode, [], tool, target);
-  if (decision === "ask") {
-    const answer = await ask(rl, `allow ${tool} ${JSON.stringify(target)}? [y/n] `);
-    if (answer !== "y") {
-      process.stdout.write("blocked.\n");
-      app.sessions.append(sessionId, { type: "tool-blocked", tool });
-      return "continue";
-    }
-  }
-  if (mode === "plan") {
-    process.stdout.write("plan mode: writes are disabled, showing the diff only.\n");
-    return "continue";
-  }
-  const result = await run();
-  process.stdout.write(`${result.output === "" ? "(no output)" : result.output}\n`);
-  app.sessions.append(sessionId, { type: "tool", tool, ok: result.ok });
   return "continue";
 }

@@ -20,6 +20,7 @@ export interface Config {
   dailyBudget: number;
   maxCost: number;
   compactThreshold: number;
+  ollamaBaseUrl: string;
   auth: FlowAuth;
 }
 
@@ -174,6 +175,10 @@ export function loadConfig(
     dailyBudget: positiveNumber(env.APP_DAILY_BUDGET, "APP_DAILY_BUDGET", 0),
     maxCost: positiveNumber(env.APP_MAX_COST, "APP_MAX_COST", 0),
     compactThreshold,
+    ollamaBaseUrl:
+      env.APP_OLLAMA_BASE_URL && env.APP_OLLAMA_BASE_URL !== ""
+        ? env.APP_OLLAMA_BASE_URL
+        : "http://localhost:11434/v1",
     auth: {
       anthropic: nonempty(env.APP_ANTHROPIC_API_KEY),
       openai: nonempty(env.APP_OPENAI_API_KEY),
