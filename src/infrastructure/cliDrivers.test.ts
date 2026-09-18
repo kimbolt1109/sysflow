@@ -5,6 +5,7 @@ import {
   findOnPath,
   headlessArgs,
   isDirectPath,
+  modelArgs,
   quoteCmdArg,
   resolveLaunch,
   type CliDriverDef,
@@ -38,6 +39,15 @@ describe("cliDrivers", () => {
       "json",
       "--yolo",
     ]);
+  });
+
+  it("builds per-CLI --model flags", () => {
+    expect(modelArgs("claude", "claude-sonnet-4-6")).toEqual(["--model", "claude-sonnet-4-6"]);
+    expect(modelArgs("codex", "gpt-5")).toEqual(["-m", "gpt-5"]);
+    expect(modelArgs("grok", "grok-4.6")).toEqual(["-m", "grok-4.6"]);
+    expect(modelArgs("agy", "gemini-3.8-flash-high")).toEqual(["--model", "gemini-3.8-flash-high"]);
+    expect(modelArgs("claude", undefined)).toEqual([]);
+    expect(modelArgs("claude", "")).toEqual([]);
   });
 
   it("detects direct paths and PATH binaries", () => {

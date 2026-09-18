@@ -9,6 +9,8 @@ export interface CliDriverDef {
   extraArgs?: string[];
   argvPrefix?: string[];
   timeoutMs?: number;
+  /** model id to select inside the CLI (passed via its --model flag) */
+  cliModel?: string;
 }
 
 const TEXT_KEYS = new Set(["text", "delta", "result", "output_text"]);
@@ -46,6 +48,16 @@ function collectText(value: unknown, skipKey = ""): string[] {
   return [];
 }
 
+export function modelArgs(command: string, cliModel?: string): string[] {
+  if (cliModel === undefined || cliModel === "") return [];
+  switch (command) {
+    case "codex":
+    case "grok":
+      return ["-m", cliModel];
+    default:
+      return ["--model", cliModel];
+  }
+}
 export function headlessArgs(command: string, prompt: string, extraArgs: string[] = []): string[] {
   switch (command) {
     case "claude":
@@ -56,6 +68,12 @@ export function headlessArgs(command: string, prompt: string, extraArgs: string[
       return ["run", prompt, "--format", "json", ...extraArgs];
     case "aider":
       return ["--message", prompt, ...extraArgs];
+    case "agy":
+      // verified against agy 1.2.6: print mode, json output, approval via --dangerously-skip-permissions
+      return ["-p", prompt, "--output-format", "json", ...extraArgs];
+    case "grok":
+      // verified against grok --help: -p/--single, --output-format plain|json|streaming-json
+      return ["-p", prompt, "--output-format", "json", ...extraArgs];
     default:
       return ["-p", prompt, "--output-format", "json", ...extraArgs];
   }
@@ -158,6 +176,7 @@ export class CliDriver implements Driver {
   private readonly command: string;
   private readonly extraArgs: string[];
   private readonly argvPrefix: string[];
+  private readonly cliModel?: string;
   private readonly timeoutMs: number;
   private requests = 0;
   private estimatedTokens = 0;
@@ -167,6 +186,7 @@ export class CliDriver implements Driver {
     this.command = def.command;
     this.extraArgs = def.extraArgs ?? [];
     this.argvPrefix = def.argvPrefix ?? [];
+    this.cliModel = def.cliModel;
     this.timeoutMs = def.timeoutMs ?? 120000;
   }
 
@@ -238,7 +258,11 @@ export class CliDriver implements Driver {
           resolvePromise({ stdout, stderr, code: code ?? 1 });
         });
       };
-      const args = [...this.argvPrefix, ...headlessArgs(this.command, prompt, this.extraArgs)];
+      const args = [
+        ...this.argvPrefix,
+        ...modelArgs(this.command, this.cliModel),
+        ...headlessArgs(this.command, prompt, this.extraArgs),
+      ];
       const launch = resolveLaunch(this.command, args);
       const child = spawn(launch.file, launch.argv, { shell: false, timeout: this.timeoutMs });
       // Prompt travels via argv; close stdin so CLIs that append piped stdin don't wait on it.

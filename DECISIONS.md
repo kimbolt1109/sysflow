@@ -2,6 +2,26 @@
 
 Autonomous build; only truly-blocking questions go to the user. Newest first.
 
+## 2026-09-18 — Model discovery + pretty picker (post-M8 feature)
+
+- **Picker lists everything installed tools know:** `opencode models`
+  (431 entries incl. Zen + openrouter mirrors), `agy models` (14,
+  mapped `gemini-*→google/`, `claude-*→anthropic/`, `gpt-*→openai/`
+  with raw `cliModel` kept), `grok models`, Ollama `/api/tags`,
+  OpenRouter catalog (prices/context filled in). Registry stays the
+  base; discovery merges by id, cached 30 min in
+  `~/.flow/discovered.json`, `flow models --refresh` forces.
+- **agy has no `--yolo`** (verified `--help` on agy 1.2.6) — routing
+  now sends `--dangerously-skip-permissions`; added `grok/*→grok
+--always-approve` and `openai/gpt-oss-*→agy` rules.
+- **CLI drivers pass `--model`** (per-tool flag shape) so a picked
+  model is the model that runs; only when `cliModel` is known,
+  otherwise the CLI default applies.
+- **Pretty picker:** zero-dep ANSI (purple providers, orange cursor
+  bar, green Free badges, `●/○`, filter-as-you-type, Space/`a`/Enter/
+  Esc), raw-mode keypress loop, viewport scrolling, NO_COLOR respected;
+  non-TTY keeps the legacy numbered prompt.
+
 ## 2026-09-18 — M8 polish + gap-fill pass (final)
 
 - **npm: `flow` taken (v0.2.3), `flow-ai-cli` free** — package stays

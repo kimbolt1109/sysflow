@@ -128,7 +128,7 @@ export function parseArgv(argv: string[]): CliArgs {
     } else if (tok === "--version" || tok === "-v") {
       args.command = "version";
     } else if (!tok.startsWith("-") && positional === undefined) {
-      positional = [tok, ...argv.slice(i + 1).filter((t) => t.startsWith("-") === false)];
+      positional = [tok, ...argv.slice(i + 1)];
       break;
     } else {
       args.rest.push(tok);

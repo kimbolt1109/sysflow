@@ -10,6 +10,10 @@ export interface ModelInfo {
   inputPricePerM: number;
   outputPricePerM: number;
   tags: string[];
+  /** where this entry was discovered: registry, opencode, agy, grok, ollama, openrouter */
+  source?: string;
+  /** model id to pass to the underlying CLI (--model); defaults to the id without provider prefix */
+  cliModel?: string;
 }
 
 export interface RoutingRule {

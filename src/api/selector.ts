@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { FlowApp } from "@/app";
+import { PICKER_PLAIN, PICKER_THEME, pickModels } from "@/api/modelPicker";
 import type { ModelInfo, OrchestrationMode } from "@/domain/models";
 
 export interface Selection {
@@ -95,7 +96,9 @@ export async function runSelector(
   preMode?: OrchestrationMode,
 ): Promise<Selection> {
   const last = loadLastSelection(app);
-  const flat = app.config.models;
+  const all = await app.refreshModels();
+  process.stdout.write(`models: ${all.length} known (registry + discovered)\n`);
+  const flat = all;
   const quotas = new Map<string, string>();
   await Promise.all(
     flat.map(async (m) => {
@@ -114,24 +117,38 @@ export async function runSelector(
       }
     }),
   );
-  printModels(app.config.models, quotas);
-
   let models: string[];
   if (preselected !== undefined && preselected.length > 0) {
     models = preselected;
+  } else if (process.stdin.isTTY === true && process.stdout.isTTY === true) {
+    const theme = app.config.noColor ? PICKER_PLAIN : PICKER_THEME;
+    const picked = await pickModels(flat, theme, Math.max(5, (process.stdout.rows ?? 24) - 12));
+    if (picked === null) {
+      const knownIds = new Set(flat.map((m) => m.id));
+      const remembered = (last?.models ?? []).filter((id) => knownIds.has(id));
+      models = remembered.length > 0 ? remembered : [(flat[0] as ModelInfo).id];
+    } else {
+      models = picked;
+    }
+    if (models.length === 0) models = [(flat[0] as ModelInfo).id];
   } else {
+    printModels(flat, quotas);
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const def = last?.models.join(",") ?? "1";
+    const knownIds = new Set(flat.map((m) => m.id));
+    const remembered = (last?.models ?? []).filter((id) => knownIds.has(id));
+    const def = remembered.length > 0 ? remembered.join(",") : "1";
     const answer = await question(rl, `Toggle models by number, comma-separated [${def}]: `);
     rl.close();
     const raw = answer === "" ? def : answer;
     if (/^[0-9,\s]+$/.test(raw)) {
       models = parseToggle(raw, flat.length).map((i) => (flat[i] as ModelInfo).id);
     } else {
+      const known = new Set(flat.map((m) => m.id));
       models = raw
         .split(",")
         .map((s) => s.trim())
-        .filter((s) => s !== "");
+        .filter((s) => s !== "" && known.has(s));
+      if (models.length === 0) throw new Error("no known models selected");
     }
     if (models.length === 0) models = [(flat[0] as ModelInfo).id];
   }

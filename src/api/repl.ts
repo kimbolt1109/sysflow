@@ -397,9 +397,9 @@ async function runSlash(
       );
       return "continue";
     case "models":
-      for (const m of app.config.models) {
+      for (const m of app.models) {
         process.stdout.write(
-          `- ${m.id} (${m.contextWindow} ctx, $${m.inputPricePerM}/$${m.outputPricePerM} per 1M)\n`,
+          `- ${m.id} (${m.contextWindow} ctx, $${m.inputPricePerM}/$${m.outputPricePerM} per 1M${m.source === undefined ? "" : `, via ${m.source}`})\n`,
         );
       }
       return "continue";

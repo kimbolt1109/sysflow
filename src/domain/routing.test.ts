@@ -9,8 +9,20 @@ const RULES: RoutingRule[] = [
     command: "claude",
     args: ["--dangerously-skip-permissions"],
   },
+  {
+    match: "openai/gpt-oss-*",
+    driver: "cli",
+    command: "agy",
+    args: ["--dangerously-skip-permissions"],
+  },
   { match: "openai/gpt-*", driver: "cli", command: "codex" },
-  { match: "google/gemini-*", driver: "cli", command: "agy", args: ["--yolo"] },
+  {
+    match: "google/gemini-*",
+    driver: "cli",
+    command: "agy",
+    args: ["--dangerously-skip-permissions"],
+  },
+  { match: "grok/*", driver: "cli", command: "grok", args: ["--always-approve"] },
   { match: "*", driver: "cli", command: "opencode" },
 ];
 
@@ -23,11 +35,19 @@ describe("routing", () => {
     expect(matchRouting(RULES, "openai/gpt-5").command).toBe("codex");
   });
 
-  it("routes gemini models to the agy CLI with yolo flags", () => {
+  it("routes gemini models to the agy CLI with skip-permissions flags", () => {
     const rule = matchRouting(RULES, "google/gemini-pro");
 
     expect(rule.command).toBe("agy");
-    expect(rule.args).toEqual(["--yolo"]);
+    expect(rule.args).toEqual(["--dangerously-skip-permissions"]);
+  });
+
+  it("routes gpt-oss models to agy before the codex rule", () => {
+    expect(matchRouting(RULES, "openai/gpt-oss-120b-medium").command).toBe("agy");
+  });
+
+  it("routes grok models to the grok CLI", () => {
+    expect(matchRouting(RULES, "grok/grok-4.6").command).toBe("grok");
   });
 
   it("falls back to opencode for everything else", () => {

@@ -5,11 +5,11 @@ import { dailyTotals } from "@/infrastructure/usageStore";
 export async function renderStatus(app: FlowApp, daily: DailyUsage): Promise<string> {
   const lines: string[] = [];
   const providers = new Set<string>();
-  for (const model of app.config.models) {
+  for (const model of app.models) {
     providers.add(model.provider);
   }
   for (const provider of [...providers].sort()) {
-    const representative = app.config.models.find((m) => m.provider === provider)?.id ?? provider;
+    const representative = app.models.find((m) => m.provider === provider)?.id ?? provider;
     let quota;
     try {
       quota = await app.quotaFor(representative);

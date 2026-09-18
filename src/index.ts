@@ -82,13 +82,16 @@ async function main(): Promise<number> {
   const app = createApp(config);
 
   switch (args.command) {
-    case "models":
-      for (const m of app.config.models) {
+    case "models": {
+      const force = args.rest.includes("--refresh");
+      const models = force ? await app.refreshModels(true) : app.models;
+      for (const m of models) {
         process.stdout.write(
-          `${m.id} | ctx ${m.contextWindow} | $${m.inputPricePerM}/$${m.outputPricePerM} per 1M | ${m.tags.join(",")}\n`,
+          `${m.id} | ctx ${m.contextWindow} | $${m.inputPricePerM}/$${m.outputPricePerM} per 1M | ${m.tags.join(",")}${m.source === undefined ? "" : ` | via ${m.source}`}\n`,
         );
       }
       return 0;
+    }
     case "sessions":
       for (const id of app.sessions.list()) {
         process.stdout.write(`${id}  ${sessionPreview(app.sessions.load(id))}\n`);

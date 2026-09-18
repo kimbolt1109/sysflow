@@ -9,7 +9,8 @@ import type { DoctorCheck } from "@/domain/doctor";
 import type { Driver } from "@/domain/drivers";
 import type { HooksPort } from "@/domain/hooks";
 import type { McpPort } from "@/domain/mcp";
-import type { QuotaInfo } from "@/domain/models";
+import type { ModelInfo, QuotaInfo } from "@/domain/models";
+import { mergeModels } from "@/domain/discovery";
 import { buildMemoryBlock } from "@/domain/memory";
 import type { Checkpoint } from "@/domain/checkpoints";
 import { takeCheckpoint as takeCheckpointData } from "@/domain/checkpoints";
@@ -30,6 +31,13 @@ import {
 } from "@/infrastructure/checkpointStore";
 import { CliDriver, cliVersion, findOnPath } from "@/infrastructure/cliDrivers";
 import { discoverCommands } from "@/infrastructure/commandStore";
+import {
+  cacheIsFresh,
+  discoverAll,
+  loadDiscoveryCache,
+  runCli,
+  saveDiscoveryCache,
+} from "@/infrastructure/discovery";
 import { DriverAgent } from "@/infrastructure/driverAgent";
 import { HookRunner, loadHooks } from "@/infrastructure/hookRunner";
 import { probeKeychain } from "@/infrastructure/keychain";
@@ -78,6 +86,9 @@ export interface FlowApp {
   skills: SkillDef[];
   subagents: SubagentDef[];
   customCommands: CustomCommand[];
+  /** registry merged with the discovery cache (refresh via refreshModels) */
+  readonly models: ModelInfo[];
+  refreshModels(force?: boolean): Promise<ModelInfo[]>;
   memory: string;
   memoryFiles: MemoryFile[];
   legacyImport?: string;
@@ -132,7 +143,11 @@ function nativeDriverFor(config: Config, fetchFn?: typeof fetch): Driver | undef
   return undefined;
 }
 
-export function cliDriverFor(config: Config, modelId?: string): Driver | undefined {
+export function cliDriverFor(
+  config: Config,
+  modelId?: string,
+  models: ModelInfo[] = config.models,
+): Driver | undefined {
   const id = modelId ?? config.defaultModel;
   const rule = matchRouting(config.routing, id);
   if (
@@ -140,12 +155,21 @@ export function cliDriverFor(config: Config, modelId?: string): Driver | undefin
     rule.command !== undefined &&
     findOnPath(rule.command) !== undefined
   ) {
-    return new CliDriver(id, { command: rule.command, extraArgs: rule.args });
+    return new CliDriver(id, {
+      command: rule.command,
+      extraArgs: rule.args,
+      cliModel: models.find((m) => m.id === id)?.cliModel,
+    });
   }
   return undefined;
 }
 
-export function createDriverFor(config: Config, modelId: string, fetchFn?: typeof fetch): Driver {
+export function createDriverFor(
+  config: Config,
+  modelId: string,
+  fetchFn?: typeof fetch,
+  models: ModelInfo[] = config.models,
+): Driver {
   const scoped: Config = { ...config, defaultModel: modelId };
   const native = nativeDriverFor(scoped, fetchFn);
   if (native !== undefined) return native;
@@ -155,9 +179,24 @@ export function createDriverFor(config: Config, modelId: string, fetchFn?: typeo
     rule.command !== undefined &&
     findOnPath(rule.command) !== undefined
   ) {
-    return new CliDriver(modelId, { command: rule.command, extraArgs: rule.args });
+    return new CliDriver(modelId, {
+      command: rule.command,
+      extraArgs: rule.args,
+      cliModel: models.find((m) => m.id === modelId)?.cliModel,
+    });
   }
   return new MockDriver(`${modelId} (mock: no key and no CLI found)`);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<undefined>((resolvePromise) => {
+    timer = setTimeout(() => resolvePromise(undefined), ms);
+    if (typeof timer === "object" && typeof timer.unref === "function") timer.unref();
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }
 
 export function contextPrefixFor(memory: string, skills: SkillDef[]): string {
@@ -187,12 +226,18 @@ export function createDriverAgents(
   };
   return modelIds.map(
     (id) =>
-      new DriverAgent(id, createDriverFor(app.config, id), app.tools, check, {
-        contextPrefix: prefix,
-        subagents: app.subagents,
-        mcp: app.mcp,
-        hooks,
-      }),
+      new DriverAgent(
+        id,
+        createDriverFor(app.config, id, undefined, app.models),
+        app.tools,
+        check,
+        {
+          contextPrefix: prefix,
+          subagents: app.subagents,
+          mcp: app.mcp,
+          hooks,
+        },
+      ),
   );
 }
 
@@ -201,10 +246,12 @@ export function createApp(
   overrides: { driver?: Driver; fetchFn?: typeof fetch } = {},
 ): FlowApp {
   const logger = createLogger(config.logLevel);
+  const cached = loadDiscoveryCache(config.dataDir);
+  const initialModels = mergeModels(config.models, cached !== undefined ? cached.models : []);
   const driver =
     overrides.driver ??
     nativeDriverFor(config, overrides.fetchFn) ??
-    cliDriverFor(config) ??
+    cliDriverFor(config, undefined, initialModels) ??
     new MockDriver(`${config.defaultModel} (mock: no key and no CLI found)`);
   const tools = new LocalTools(config.projectDir);
   const sessions = new SessionStore(config.dataDir, config.projectDir);
@@ -217,6 +264,7 @@ export function createApp(
   const legacy = projectMem === "" ? findLegacyImport(config.projectDir) : undefined;
   const rules = loadPermissionRules(config.dataDir, config.projectDir);
   const mcp = new McpPool(loadMcpConfig(config.dataDir, config.projectDir));
+  let models = initialModels;
   logger.debug("app created", { model: config.defaultModel, driver: driver.id });
 
   const app: FlowApp = {
@@ -229,6 +277,32 @@ export function createApp(
     skills,
     subagents,
     customCommands: discoverCommands(config.dataDir, config.projectDir),
+    get models() {
+      return models;
+    },
+    refreshModels: async (force = false) => {
+      const cache = loadDiscoveryCache(config.dataDir);
+      if (!force && cache !== undefined && cacheIsFresh(cache.at, Date.now())) {
+        models = mergeModels(config.models, cache.models);
+        return models;
+      }
+      const live =
+        (await withTimeout(
+          discoverAll({
+            run: runCli,
+            fetchFn: fetch,
+            ollamaBaseUrl: config.ollamaBaseUrl,
+            openRouterKey: config.auth.openrouter,
+          }),
+          15000,
+        )) ?? [];
+      if (live.length > 0) {
+        saveDiscoveryCache(config.dataDir, live);
+      }
+      const fresh = loadDiscoveryCache(config.dataDir);
+      models = mergeModels(config.models, fresh !== undefined ? fresh.models : []);
+      return models;
+    },
     memory,
     memoryFiles,
     legacyImport: legacy?.path,

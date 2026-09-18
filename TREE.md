@@ -30,6 +30,7 @@ flow/
 │   ├── config.ts                                 # ONLY module reading process.env (APP_*)
 │   ├── api/                                      # CLI edge (imports domain+lib; api-internal values)
 │   │   ├── cli.ts                                # argv parsing + help (§10 surface)
+│   │   ├── modelPicker.ts                        # interactive picker: highlight, filter, checkboxes
 │   │   ├── selector.ts                           # model picker, mode picker, last-selection memory
 │   │   ├── repl.ts                               # solo/council REPL, slash dispatch, compaction, checkpoints
 │   │   ├── toolCommands.ts                       # /read/write/edit/bash/glob/grep + y/a/e/n approvals
@@ -44,6 +45,7 @@ flow/
 │   │   ├── drivers.ts                            # Driver port (native + CLI behind one interface)
 │   │   ├── toolDefs.ts                           # ToolName, ToolsPort, arg substitution helpers
 │   │   ├── modelRegistry.ts                      # list/find/group models
+│   │   ├── discovery.ts                          # merge registry with discovered models
 │   │   ├── routing.ts                            # first-match-wins glob routing (agy default)
 │   │   ├── permissions.ts                        # modes + Tool(pattern) matcher, last-wins
 │   │   ├── tokenizer.ts                          # chars/4 estimates, /context bars
@@ -65,6 +67,7 @@ flow/
 │   │   ├── cliDrivers.ts                         # installed-CLI subprocess drivers + passthrough
 │   │   ├── agentLoop.ts                          # provider-agnostic tool-call loop (```tool:* fences)
 │   │   ├── driverAgent.ts                        # Driver → Orchestrant adapter (council member)
+│   │   ├── discovery.ts                          # opencode/agy/grok/ollama/openrouter probers + cache
 │   │   ├── localTools.ts                         # read/write/edit/bash/glob/grep/remove in workspace
 │   │   ├── sessionStore.ts                       # JSONL sessions + fork/rename
 │   │   ├── permissionStore.ts · userSettings.ts  # rules + defaultModel persistence

@@ -85,8 +85,20 @@ const BUILTIN_ROUTING: RoutingRule[] = [
     command: "claude",
     args: ["--dangerously-skip-permissions"],
   },
+  {
+    match: "openai/gpt-oss-*",
+    driver: "cli",
+    command: "agy",
+    args: ["--dangerously-skip-permissions"],
+  },
   { match: "openai/gpt-*", driver: "cli", command: "codex" },
-  { match: "google/gemini-*", driver: "cli", command: "agy", args: ["--yolo"] },
+  {
+    match: "google/gemini-*",
+    driver: "cli",
+    command: "agy",
+    args: ["--dangerously-skip-permissions"],
+  },
+  { match: "grok/*", driver: "cli", command: "grok", args: ["--always-approve"] },
   { match: "*", driver: "cli", command: "opencode" },
 ];
 

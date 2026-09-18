@@ -2,10 +2,18 @@
 
 ## Entry points
 
+The picker lists every known model: the `flow.json` registry plus live
+discovery from your installed tools (`opencode models`, `agy models`,
+`grok models`, Ollama `/api/tags`, OpenRouter's catalog), cached for
+30 minutes in `~/.flow/discovered.json`. Navigate with ↑↓, type to
+filter, Space toggles, `a` toggles a provider group, Enter confirms,
+Esc cancels. Selected models remember themselves for next time.
+
 ```
 flow                          # model picker → REPL (solo or council)
 flow --model openai/gpt-5     # skip the picker
 flow --models a,b --mode council
+flow models [--refresh]       # registry + live discovery (opencode/agy/grok/ollama/openrouter)
 flow -c / flow -r [id]        # continue latest / resume (picker with previews: flow sessions)
 flow -p "task" [--agents a,b] [--mode council|relay|workers|auto]
   [--output-format text|json|stream-json] [--max-cost N] [--json] [--no-notify]
