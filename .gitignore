@@ -13,5 +13,13 @@ coverage/
 # spec research clones (see docs/ARCHITECTURE.md) — never commit
 research/
 
+# foreign agent sidecars (created when wrapped CLIs run inside this repo)
+.claude-flow/
+.omc/
+.claude/
+.opencode/
+.aider*/
+.gemini/
+
 # incremental compiler state
 *.tsbuildinfo
