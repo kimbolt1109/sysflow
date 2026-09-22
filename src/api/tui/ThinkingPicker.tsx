@@ -40,7 +40,7 @@ export function ThinkingPicker({
     <Box flexDirection="column">
       <Box>
         <Text bold color="green">
-          ◆ flow
+          ◆ sys
         </Text>
         <Text bold> · Thinking level</Text>
         <Text dimColor> (3/3 — last step)</Text>

@@ -8,6 +8,7 @@ import {
   sliceByRows,
   transcriptRowCounts,
 } from "@/domain/transcript.js";
+import { DOVE_ART, DOVE_BLUE, doveGreeting } from "@/api/tui/dove.js";
 
 export interface TranscriptLine {
   key: number;
@@ -163,12 +164,14 @@ export function TranscriptView({
       )}
       {visible.length === 0 && (
         <Box flexDirection="column" marginY={1}>
-          <Text bold color="green">
-            ◆ flow
-          </Text>
+          {DOVE_ART.map((line, i) => (
+            <Text key={i} color={DOVE_BLUE}>
+              {line}
+            </Text>
+          ))}
+          <Text bold>{doveGreeting()}</Text>
           <Text dimColor>
-            Ask anything or type / for commands. Conversation stays here — PgUp scrolls back, PgDn
-            returns to live output.
+            Conversation stays here — PgUp scrolls back, PgDn returns to live output.
           </Text>
         </Box>
       )}
@@ -319,7 +322,7 @@ export function Header({ left, right, alert }: HeaderProps): ReactElement {
   return (
     <Box>
       <Text bold color="green">
-        ◆ flow
+        ◆ sys
       </Text>
       <Text bold> · {left}</Text>
       {right !== undefined && right !== "" && <Text dimColor> · {right}</Text>}

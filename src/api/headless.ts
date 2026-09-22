@@ -3,7 +3,9 @@ import type { FlowApp } from "@/app.js";
 import type { CliArgs } from "@/api/cli.js";
 import type { CouncilSession } from "@/api/council.js";
 import { formatMcpInventory } from "@/domain/mcp.js";
+import { formatDecisions, screenPrompt } from "@/domain/decide.js";
 import { runToolLoop, TOOL_SYSTEM, type ToolCheck } from "@/infrastructure/agentLoop.js";
+import { answerQuestions } from "@/infrastructure/layaClient.js";
 import { fetchPageText } from "@/lib/webfetch.js";
 import { openBrowser } from "@/lib/browser.js";
 
@@ -40,6 +42,10 @@ export async function runHeadless(
   if (submitted.decision === "block") {
     throw new Error(`prompt blocked: ${submitted.reason}`);
   }
+  const screen = screenPrompt(prompt);
+  if (screen.risky) {
+    process.stderr.write(`[guard: this prompt trips ${screen.notes.join("; ")}]\n`);
+  }
   const finish = (text: string, input: number, output: number): HeadlessResult => {
     const base = model.split(" (")[0] ?? model;
     const used = app.recordUsage(base.split("/")[0] ?? "unknown", base, input, output);
@@ -52,7 +58,7 @@ export async function runHeadless(
       process.stderr.write(`[quota] daily spend $${used.dailyCost.toFixed(2)} (${used.level})\n`);
     }
     if (opts.notify === true) {
-      app.notifyUser("Flow task complete", text.slice(0, 120));
+      app.notifyUser("Sys task complete", text.slice(0, 120));
     }
     return { text, model, sessionId, inputTokens: input, outputTokens: output, cost: used.cost };
   };
@@ -96,6 +102,8 @@ export async function runHeadless(
     },
     onWebfetch: (url) => fetchPageText(url),
     onBrowse: (url) => openBrowser(url),
+    onDecide: async (state, questions) =>
+      formatDecisions((await answerQuestions(app.config.layaUrl, state, questions)).answers),
     onListMcpTools: async () => formatMcpInventory(await app.mcp.toolInventory()),
     onMcpTool: (toolName, args) => app.mcp.call(toolName, args),
   });

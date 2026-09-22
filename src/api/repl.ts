@@ -21,10 +21,14 @@ import { sessionPreview } from "@/domain/sessions.js";
 import { skillListing } from "@/domain/skills.js";
 import { subagentListing } from "@/domain/subagents.js";
 import { buildContextUsage, renderContextBars } from "@/domain/tokenizer.js";
+import { formatElapsed } from "@/domain/transcript.js";
 import { runReadTool, runWriteTool } from "@/api/toolCommands.js";
 import { runToolLoop, TOOL_SYSTEM } from "@/infrastructure/agentLoop.js";
 import { fetchPageText } from "@/lib/webfetch.js";
 import { openBrowser } from "@/lib/browser.js";
+import { answerQuestions } from "@/infrastructure/layaClient.js";
+import { formatDecisions, screenPrompt, triageQuestions } from "@/domain/decide.js";
+import type { DecisionQuestion } from "@/domain/decide.js";
 
 export interface ReplOptions {
   resume?: string;
@@ -73,7 +77,7 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
   }
   app.sessions.append(sessionId, { type: "session-start", mode, model: app.driver.id });
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "flow> " });
+  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "sys> " });
   let generating = false;
   let stopCurrent = false;
   let lastSigint = 0;
@@ -93,7 +97,7 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
   });
 
   process.stdout.write(
-    `flow · ${app.driver.id} · session ${sessionId.slice(0, 8)} · /help for commands\n`,
+    `sys · ${app.driver.id} · session ${sessionId.slice(0, 8)} · /help for commands\n`,
   );
   if (opts.dangerouslySkip) {
     process.stdout.write("YOLO: dangerously skipping permissions — every tool auto-approved.\n");
@@ -114,7 +118,7 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
     resolve: (answer: string) => void;
   }> = [];
   app.askUser = (question, options) => {
-    app.notifyUser("Flow needs your input", question.slice(0, 120));
+    app.notifyUser("Sys needs your input", question.slice(0, 120));
     return new Promise<string>((resolve) => {
       pendingQuestions.push({ question, options, resolve });
       process.stdout.write(
@@ -208,47 +212,32 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
     }
     generating = true;
     stopCurrent = false;
+    const turnStart = Date.now();
+    const screen = screenPrompt(input);
+    if (screen.risky) {
+      process.stdout.write(
+        `[guard: this prompt trips ${screen.notes.join("; ")} — continuing; tell me to stop if I'm wrong]\n`,
+      );
+    }
     history.push({ role: "user", content: input });
     app.sessions.append(sessionId, { type: "user", text: input });
     try {
       let text = "";
       const loop = await runToolLoop(app.driver, app.tools, TOOL_SYSTEM, input, {
         seed: history.slice(0, -1),
-        maxTurns: 12,
-        check: (tool, toolInput) => checkPermission(mode, rules, tool, toolInput),
         emit: (token) => {
           if (stopCurrent) return;
           text += token;
           process.stdout.write(token);
         },
-        hooks: {
-          before: (name, toolInput) =>
-            app.hooks.fire("PreToolUse", { tool_name: name, tool_input: toolInput }),
-          after: (name, toolInput, output) =>
-            app.hooks
-              .fire("PostToolUse", {
-                tool_name: name,
-                tool_input: toolInput,
-                output: output.slice(0, 2000),
-              })
-              .then(() => undefined),
-        },
-        onSkill: (name) => {
-          const skill = app.skills.find((s) => s.name === name);
-          if (skill?.disableModelInvocation === true) return undefined;
-          return app.skillBody(name);
-        },
-        onQuestion: app.askUser,
-        onWebfetch: (url) => fetchPageText(url),
-        onBrowse: (url) => openBrowser(url),
-        onListMcpTools: async () => formatMcpInventory(await app.mcp.toolInventory()),
-        onMcpTool: (toolName, args) => app.mcp.call(toolName, args),
+        ...soloLoopOpts(app, mode, rules),
       });
       text = loop.answer;
       process.stdout.write("\n");
       if (stopCurrent) {
         app.sessions.append(sessionId, { type: "interrupted" });
       } else {
+        process.stdout.write(`[took ${formatElapsed(Date.now() - turnStart)}]\n`);
         history.push({ role: "assistant", content: text });
         app.sessions.append(sessionId, { type: "assistant", text });
         const base = app.driver.id.split(" (")[0] ?? app.driver.id;
@@ -259,12 +248,9 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
           historyTokens(text),
         );
         costs.session += used.cost;
-        if (notify) app.notifyUser("Flow task complete", text.slice(0, 120));
+        if (notify) app.notifyUser("Sys task complete", text.slice(0, 120));
         if (used.level !== "ok" && notify) {
-          app.notifyUser(
-            "Flow budget",
-            `daily spend $${used.dailyCost.toFixed(2)} (${used.level})`,
-          );
+          app.notifyUser("Sys budget", `daily spend $${used.dailyCost.toFixed(2)} (${used.level})`);
         }
       }
       if (await maybeCompact(app, sessionId, history)) {
@@ -305,6 +291,13 @@ async function runCouncilTurn(
   }
   history.push({ role: "user", content: input });
   app.sessions.append(sessionId, { type: "user", text: input });
+  const turnStart = Date.now();
+  const screen = screenPrompt(task);
+  if (screen.risky) {
+    process.stdout.write(
+      `[guard: this prompt trips ${screen.notes.join("; ")} — continuing; tell me to stop if I'm wrong]\n`,
+    );
+  }
   try {
     try {
       const checkpoint = await app.takeCheckpoint(sessionId, "before council execution");
@@ -317,12 +310,12 @@ async function runCouncilTurn(
       // checkpoints are best-effort and never block execution
     }
     const run = await council.run(task, (line) => process.stdout.write(`${line}\n`));
-    process.stdout.write(`${run.text}\n`);
+    process.stdout.write(`${run.text}\n[took ${formatElapsed(Date.now() - turnStart)}]\n`);
     history.push({ role: "assistant", content: run.text });
     app.sessions.append(sessionId, { type: "assistant", text: run.text });
     const used = app.recordUsage("council", "", historyTokens(task), historyTokens(run.text));
     costs.session += used.cost;
-    if (notify) app.notifyUser("Flow task complete", run.text.slice(0, 120));
+    if (notify) app.notifyUser("Sys task complete", run.text.slice(0, 120));
     await app.hooks.fire("Notification", { session_id: sessionId, kind: "task-complete" });
     if (await maybeCompact(app, sessionId, history)) {
       process.stdout.write("[auto-compact: transcript summarized, recent window kept]\n");
@@ -352,7 +345,7 @@ async function runApproveTurn(
     app.sessions.append(sessionId, { type: "assistant", text: run.text });
     const used = app.recordUsage("council", "", historyTokens("/approve"), historyTokens(run.text));
     costs.session += used.cost;
-    if (notify) app.notifyUser("Flow task complete", run.text.slice(0, 120));
+    if (notify) app.notifyUser("Sys task complete", run.text.slice(0, 120));
     await app.hooks.fire("Notification", { session_id: sessionId, kind: "task-complete" });
   } catch (err) {
     process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -362,6 +355,39 @@ async function runApproveTurn(
 
 function historyTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
+}
+
+/** Shared tool-loop wiring for every solo turn: same checks, skills, web, MCP. */
+function soloLoopOpts(app: FlowApp, mode: PermissionMode, rules: PermissionRule[]) {
+  return {
+    maxTurns: 12,
+    check: (tool: string, toolInput: Record<string, unknown>) =>
+      checkPermission(mode, rules, tool, toolInput),
+    hooks: {
+      before: (name: string, toolInput: Record<string, unknown>) =>
+        app.hooks.fire("PreToolUse", { tool_name: name, tool_input: toolInput }),
+      after: (name: string, toolInput: Record<string, unknown>, output: string) =>
+        app.hooks
+          .fire("PostToolUse", {
+            tool_name: name,
+            tool_input: toolInput,
+            output: output.slice(0, 2000),
+          })
+          .then(() => undefined),
+    },
+    onSkill: (name: string) => {
+      const skill = app.skills.find((s) => s.name === name);
+      if (skill?.disableModelInvocation === true) return undefined;
+      return app.skillBody(name);
+    },
+    onQuestion: app.askUser,
+    onWebfetch: (url: string) => fetchPageText(url),
+    onBrowse: (url: string) => openBrowser(url),
+    onDecide: async (state: string, questions: Record<string, DecisionQuestion>) =>
+      formatDecisions((await answerQuestions(app.config.layaUrl, state, questions)).answers),
+    onListMcpTools: async () => formatMcpInventory(await app.mcp.toolInventory()),
+    onMcpTool: (toolName: string, args: unknown) => app.mcp.call(toolName, args),
+  };
 }
 
 function contextWindowOf(app: FlowApp): number {
@@ -474,7 +500,7 @@ async function runSlash(
       return "exit";
     case "help":
       process.stdout.write(
-        `${helpText()}\n\nREPL: /clear /context /compact [focus] /model /models /permissions /sessions /resume /doctor /skills /memory /init /mcp /agents /plan /approve /config /review /add-dir plus /read /write /edit /bash /glob /grep\n`,
+        `${helpText()}\n\nREPL: /clear /context /compact [focus] /model /models /permissions /sessions /resume /doctor /skills /triage /memory /init /mcp /agents /plan /approve /config /review /add-dir plus /read /write /edit /bash /glob /grep\n`,
       );
       return "continue";
     case "context": {
@@ -505,7 +531,7 @@ async function runSlash(
       return "continue";
     case "model":
       process.stdout.write(
-        `model: ${app.driver.id}${arg !== "" ? ` (switch with: flow --model ${arg})` : ""}\n`,
+        `model: ${app.driver.id}${arg !== "" ? ` (switch with: sys --model ${arg})` : ""}\n`,
       );
       return "continue";
     case "models":
@@ -552,6 +578,17 @@ async function runSlash(
         process.stdout.write(`${body}\n`);
       }
       return "continue";
+    case "triage": {
+      if (arg === "") {
+        process.stdout.write(
+          "usage: /triage <text> — route, urgency, refund, and churn in one pass\n",
+        );
+        return "continue";
+      }
+      const triaged = await answerQuestions(app.config.layaUrl, arg, triageQuestions());
+      process.stdout.write(`triage (${triaged.source}):\n${formatDecisions(triaged.answers)}\n`);
+      return "continue";
+    }
     case "memory":
       if (arg === "edit") {
         const project = app.memoryFiles[1];
@@ -724,9 +761,9 @@ async function runSlash(
       return "continue";
     }
     case "export": {
-      const target = arg === "" ? `flow-export-${Date.now()}.md` : arg;
+      const target = arg === "" ? `sys-export-${Date.now()}.md` : arg;
       const body = history.map((m) => `## ${m.role}\n\n${m.content}`).join("\n\n");
-      const result = await app.tools.write(target, `# Flow export\n\n${body}\n`);
+      const result = await app.tools.write(target, `# Sys export\n\n${body}\n`);
       process.stdout.write(`${result.output}\n`);
       return "continue";
     }
@@ -796,6 +833,8 @@ async function runSlash(
           sessionId,
           history,
           substituteArgs(custom.template, arg),
+          mode,
+          rules,
         );
         return "continue";
       }
@@ -822,6 +861,8 @@ async function runCustomCommand(
   sessionId: string,
   history: ChatMessage[],
   task: string,
+  mode: PermissionMode,
+  rules: PermissionRule[],
 ): Promise<void> {
   history.push({ role: "user", content: task });
   app.sessions.append(sessionId, { type: "user", text: task });
@@ -834,11 +875,15 @@ async function runCustomCommand(
   }
   try {
     let text = "";
-    const transcript = [...history];
-    await app.driver.streamMessage(transcript, (token) => {
-      text += token;
-      process.stdout.write(token);
+    const loop = await runToolLoop(app.driver, app.tools, TOOL_SYSTEM, task, {
+      seed: history.slice(0, -1),
+      emit: (token) => {
+        text += token;
+        process.stdout.write(token);
+      },
+      ...soloLoopOpts(app, mode, rules),
     });
+    text = loop.answer;
     process.stdout.write("\n");
     history.push({ role: "assistant", content: text });
     app.sessions.append(sessionId, { type: "assistant", text });

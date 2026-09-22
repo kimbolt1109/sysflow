@@ -110,7 +110,7 @@ describe("tui SessionView", () => {
   });
 
   it("renders chrome: header, status, queue, help, collapsed sidebar", () => {
-    expect(renderToString(<Header left="solo" right="abc" />)).toContain("flow");
+    expect(renderToString(<Header left="solo" right="abc" />)).toContain("sys");
     expect(renderToString(<StatusBar left="a" right="b" />)).toContain("a");
     expect(renderToString(<ShortcutsBar />)).toContain("Shift+Tab");
     expect(renderToString(<QueuePane queue={["one", "two"]} />)).toContain("queued (2)");

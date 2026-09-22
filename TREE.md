@@ -1,20 +1,20 @@
-# TREE.md — annotated layout of the flow project
+# TREE.md — annotated layout of the sys project
 
 Excludes `node_modules/`, build output (`dist/`), and gitignored research/sidecars.
 Committed `package-lock.json` omitted below as lockfile noise.
 
 ````
-flow/
+sysflow/
 ├── .env.example                                  # every APP_* var (keys have no defaults — never commit secrets)
 ├── .github/workflows/ci.yml                      # CI: npm ci → lint → test → build on win+ubuntu, Node 24
 ├── .gitignore                                    # node_modules, dist, .env, research/, foreign CLI sidecars
-├── CLAUDE.md                                     # kit conventions + flow CLI addendum
+├── CLAUDE.md                                     # kit conventions + sys CLI addendum
 ├── DECISIONS.md                                  # working log of judgment calls (spec §15)
 ├── LICENSE                                       # MIT
 ├── README.md                                     # what/why, install, demo, command table, links
 ├── TREE.md                                       # this file
 ├── flow.json                                     # model registry, routing table (gemini→agy), quota thresholds
-├── package.json                                  # flow-ai-cli package, flow binary, six standard scripts
+├── package.json                                  # sysflow package, sys binary, six standard scripts
 ├── docs/
 │   ├── ARCHITECTURE.md                           # Path B decision + layer map
 │   ├── FEATURE_MATRIX.md                         # 7 tools vs features + gap-fill list

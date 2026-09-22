@@ -1,10 +1,10 @@
-# ARCHITECTURE — Flow (M0 decision)
+# ARCHITECTURE — Sys (M0 decision)
 
 Date: 2026-09-18. Status: accepted. Decides spec §2 Path A vs Path B.
 
 ## Decision
 
-Build Flow greenfield as **Path B**: TypeScript + Ink (React for terminals) with a clean
+Build Sys greenfield as **Path B**: TypeScript + Ink (React for terminals) with a clean
 driver abstraction — scaffolded from the Fable5 `ts-api` template and adapted to a CLI
 per `CLAUDE.md` addendum. Do NOT fork OpenCode.
 
@@ -47,7 +47,7 @@ per `CLAUDE.md` addendum. Do NOT fork OpenCode.
 - Costs: we reimplement the §8 parity surface (plus gap-fill list in
   `FEATURE_MATRIX.md`) instead of inheriting OpenCode's; mitigated by the §13 build
   order (M1 config/registry/drivers/REPL/tools → M6 CLI drivers/passthrough) and the
-  headless-first E2E harness (`flow -p` + mock providers).
+  headless-first E2E harness (`sys -p` + mock providers).
 - Rejected Path A (fork OpenCode): would shortcut multi-provider auth but force a
   Bun/Effect/Solid runtime, SQLite→JSONL migration, convention violations, and a
   multi-thousand-file foreign baseline. Recorded here as binding unless superseded

@@ -96,7 +96,7 @@ prettier + eslint + tsc + vitest. Commit lockfiles.
 8. Run `format`, `lint`, `test` — all must pass before commit. Record hard-to-reverse
    decisions in `docs/adr/NNN-title.md`.
 
-## Template addendum — flow (scaffolded from ts-api, adapted to CLI per §9 + ADR 003)
+## Template addendum — sys (scaffolded from ts-api, adapted to CLI per §9 + ADR 003)
 
 - Entry point: `src/index.ts` (thin bootstrap); `src/app.ts` is the composition root factory `createApp(config)`.
 - Build is plain `tsc` to CommonJS in `dist/`; `tsc-alias` rewrites `@/` aliases — no bundler.
@@ -107,4 +107,4 @@ prettier + eslint + tsc + vitest. Commit lockfiles.
   (erased at runtime); values flow via `FlowApp`. Domain ports (`Driver`, `ToolsPort`,
   `McpPort`, `HooksPort`) are implemented in `infrastructure/`.
 - TUI is `node:readline` (Ink deferred per ADR 003 — ESM/CJS cutover). Binary name is
-  `flow` via `package.json:bin` (`flow-ai-cli` package, ADR 004).
+  `sys` via `package.json:bin` (`sysflow` package, ADR 004).

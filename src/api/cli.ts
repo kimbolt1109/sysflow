@@ -46,7 +46,7 @@ function splitList(value: string): string[] {
 
 export function parseArgv(argv: string[]): CliArgs {
   const args: CliArgs = {
-    command: "repl",
+    command: "tui",
     agents: [],
     continueLatest: false,
     outputFormat: "text",
@@ -143,7 +143,8 @@ export function parseArgv(argv: string[]): CliArgs {
       head === "doctor" ||
       head === "sessions" ||
       head === "update" ||
-      head === "tui"
+      head === "tui" ||
+      head === "repl"
     ) {
       args.command = head;
       args.rest.push(...tail);
@@ -156,22 +157,23 @@ export function parseArgv(argv: string[]): CliArgs {
       args.rest.push(head, ...tail);
     }
   }
-  if (args.command === "repl" && args.prompt !== undefined) args.command = "headless";
+  if (args.command === "tui" && args.prompt !== undefined) args.command = "headless";
   return args;
 }
 
 export function helpText(): string {
   return [
-    "flow — unified multi-model, multi-agent AI coding CLI",
+    "sys — unified multi-model, multi-agent AI coding CLI",
     "",
     "Usage:",
-    "  flow                          selector → session",
-    "  flow -c | flow -r [id]        continue / resume",
-    "  flow sessions                 session browser",
-    '  flow -p "task" [--agents a,b] [--mode council] [--output-format json|stream-json]',
-    "  flow models                   list models",
-    "  flow tui                      full-screen terminal UI",
-    "  flow doctor | flow mcp ... | flow config ... | flow update",
+    "  sys                           full-screen session (default)",
+    "  sys repl                      classic readline session",
+    "  sys -c | sys -r [id]          continue / resume (repl)",
+    "  sys sessions                  session browser",
+    '  sys -p "task" [--agents a,b] [--mode council] [--output-format json|stream-json]',
+    "  sys models                    list models",
+    "  sys tui                       full-screen terminal UI",
+    "  sys doctor | sys mcp ... | sys config ... | sys update",
     "",
     "Flags: -y/--dangerously-skip-permissions, --permission-mode, --model(s),",
     "  --mode, --max-cost, --verbose, --no-notify, --json, --passthrough",

@@ -24,7 +24,7 @@ describe("sessionTurn", () => {
       "model-x",
     );
 
-    expect(md).toContain("# Flow transcript");
+    expect(md).toContain("# Sys transcript");
     expect(md).toContain("## user");
     expect(md).toContain("## assistant");
     expect(md).toContain("**ERROR:** boom");

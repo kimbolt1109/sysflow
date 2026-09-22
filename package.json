@@ -1,8 +1,8 @@
 {
-  "name": "flow-ai-cli",
+  "name": "sysflow",
   "version": "0.1.0",
   "private": true,
-  "description": "Flow — unified multi-model, multi-agent AI coding CLI",
+  "description": "Sys — unified multi-model, multi-agent AI coding CLI",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -19,7 +19,7 @@
     "dist"
   ],
   "bin": {
-    "flow": "dist/index.js"
+    "sys": "dist/index.js"
   },
   "scripts": {
     "setup": "npm install",

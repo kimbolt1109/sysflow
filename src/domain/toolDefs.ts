@@ -11,6 +11,7 @@ export type ToolName =
   | "webfetch"
   | "mcp"
   | "browse"
+  | "decide"
   | "screenshot"
   | "click"
   | "type"
@@ -65,6 +66,7 @@ export function parseToolCall(value: unknown): ToolCall | undefined {
     name !== "webfetch" &&
     name !== "mcp" &&
     name !== "browse" &&
+    name !== "decide" &&
     name !== "screenshot" &&
     name !== "click" &&
     name !== "type" &&
@@ -90,6 +92,7 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   webfetch: "Fetch a URL as text: {url} — research docs, issues, and references.",
   mcp: "List available MCP tools, then call one as mcp__server__tool.",
   browse: "Open a URL in the real browser: {url} — then screenshot and walk the flow.",
+  decide: "Fast local judgments: {questions, state?} — choice/score/yes-no without an LLM call.",
   screenshot: "Capture the screen to a PNG and see it on the next turn.",
   click: "Click at screen pixels: {x, y, button?: left|right|middle}.",
   type: "Type text into the focused window: {text}.",

@@ -193,6 +193,45 @@ describe("agentLoop", () => {
     }
   });
 
+  it("routes decide fences to judgments", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "flow-loop-"));
+    try {
+      const tools = new LocalTools(dir);
+      const driver = new ScriptDriver("mock/loop", [
+        '```tool:decide\n{"questions": {"risky": {"type": "noul", "instructions": "x", "affirm": ["delete"]}}, "state": "delete everything"}\n```',
+        "judged",
+      ]);
+
+      const result = await runToolLoop(driver, tools, "sys", "task", {
+        onDecide: async () => "risky: yes",
+      });
+
+      expect(result.answer).toBe("judged");
+      expect(result.transcript.some((m) => m.content === "risky: yes")).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects decide fences with bad questions", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "flow-loop-"));
+    try {
+      const tools = new LocalTools(dir);
+      const driver = new ScriptDriver("mock/loop", [
+        '```tool:decide\n{"questions": {}}\n```',
+        "ok",
+      ]);
+
+      const result = await runToolLoop(driver, tools, "sys", "task", {
+        onDecide: async () => "never",
+      });
+
+      expect(result.transcript.some((m) => m.content.includes("at least one"))).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("routes browse fences to the browser", async () => {
     const dir = await mkdtemp(join(tmpdir(), "flow-loop-"));
     try {

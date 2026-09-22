@@ -62,7 +62,7 @@ export function Picker({
     <Box flexDirection="column">
       <Box>
         <Text bold color="green">
-          ◆ flow
+          ◆ sys
         </Text>
         <Text bold> · Select models</Text>
         <Text dimColor> (1/3)</Text>

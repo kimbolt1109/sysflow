@@ -35,6 +35,8 @@ import { buildContextUsage, renderContextBars } from "@/domain/tokenizer.js";
 import { runToolLoop, TOOL_SYSTEM } from "@/infrastructure/agentLoop.js";
 import { fetchPageText } from "@/lib/webfetch.js";
 import { openBrowser } from "@/lib/browser.js";
+import { answerQuestions } from "@/infrastructure/layaClient.js";
+import { formatDecisions, screenPrompt, triageQuestions } from "@/domain/decide.js";
 import {
   findMatches,
   formatElapsed,
@@ -96,6 +98,7 @@ export function Session({
   const queueRef = useRef<string[]>([]);
   const [queued, setQueued] = useState(0);
   const [queueList, setQueueList] = useState<string[]>([]);
+  const [lastTurnMs, setLastTurnMs] = useState<number | undefined>(undefined);
   const [pending, setPending] = useState<PendingQuestion | undefined>(undefined);
   const [, setModeTick] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -239,7 +242,7 @@ export function Session({
 
   useEffect(() => {
     app.askUser = (question, options) => {
-      if (notify) app.notifyUser("Flow needs your input", question.slice(0, 120));
+      if (notify) app.notifyUser("Sys needs your input", question.slice(0, 120));
       return new Promise<string>((resolve) => {
         const entry = { question, options, resolve };
         pendingRef.current = entry;
@@ -318,6 +321,13 @@ export function Session({
       push("error", `blocked: ${submitted.reason}`);
       return;
     }
+    const screen = screenPrompt(task);
+    if (screen.risky) {
+      push(
+        "info",
+        `guard: this prompt trips ${screen.notes.join("; ")} — continuing; tell me to stop if I'm wrong.`,
+      );
+    }
     if (council !== undefined) {
       try {
         const before = await snapshotBefore();
@@ -337,7 +347,7 @@ export function Session({
         app.sessions.append(sessionId, { type: "assistant", text: run.text });
         const used = app.recordUsage("council", "", historyTokens(task), historyTokens(run.text));
         setCost((c) => c + used.cost);
-        if (notify) app.notifyUser("Flow task complete", run.text.slice(0, 120));
+        if (notify) app.notifyUser("Sys task complete", run.text.slice(0, 120));
         await pushDiffs(before);
       } catch (err) {
         push("error", `error: ${err instanceof Error ? err.message : String(err)}`);
@@ -380,6 +390,8 @@ export function Session({
         onQuestion: app.askUser,
         onWebfetch: (url) => fetchPageText(url),
         onBrowse: (url) => openBrowser(url),
+        onDecide: async (state, questions) =>
+          formatDecisions((await answerQuestions(app.config.layaUrl, state, questions)).answers),
         onListMcpTools: async () => formatMcpInventory(await app.mcp.toolInventory()),
         onMcpTool: (toolName, args) => app.mcp.call(toolName, args),
       });
@@ -394,7 +406,7 @@ export function Session({
         historyTokens(full.answer),
       );
       setCost((c) => c + used.cost);
-      if (notify) app.notifyUser("Flow task complete", full.answer.slice(0, 120));
+      if (notify) app.notifyUser("Sys task complete", full.answer.slice(0, 120));
       await pushDiffs(before);
     } catch (err) {
       updateLine(key, `error: ${err instanceof Error ? err.message : String(err)}`);
@@ -414,7 +426,7 @@ export function Session({
       case "help":
         push(
           "info",
-          "slash: /clear (/new) /model /models /skills [/name] /agents [/run name prompt] /cost /context /find text /dump [path] /plan [/approve] /exit (/quit) — plus /<skill> and /<custom>. keys: ↑↓ history and slash menu · Tab accept · \\+Enter newline · PgUp/PgDn scroll · Ctrl+B sidebar · Ctrl+S stash · Shift+Tab permit · Esc Esc help",
+          "slash: /clear (/new) /model /models /skills [/name] /agents [/run name prompt] /cost /context /triage text /find text /dump [path] /plan [/approve] /exit (/quit) — plus /<skill> and /<custom>. keys: ↑↓ history and slash menu · Tab accept · \\+Enter newline · PgUp/PgDn scroll · Ctrl+B sidebar · Ctrl+S stash · Shift+Tab permit · Esc Esc help",
         );
         return;
       case "clear":
@@ -508,6 +520,15 @@ export function Session({
       case "cost":
         push("info", renderCost(cost, app.dailyUsage()));
         return;
+      case "triage": {
+        if (arg === "") {
+          push("info", "usage: /triage <text> — route, urgency, refund, and churn in one pass");
+          return;
+        }
+        const triaged = await answerQuestions(app.config.layaUrl, arg, triageQuestions());
+        push("info", `triage (${triaged.source}):\n${formatDecisions(triaged.answers)}`);
+        return;
+      }
       case "find": {
         if (arg === "") {
           setFind(undefined);
@@ -539,7 +560,7 @@ export function Session({
         return;
       }
       case "dump": {
-        const target = arg === "" ? `flow-transcript-${sessionId.slice(0, 8)}.md` : arg;
+        const target = arg === "" ? `sys-transcript-${sessionId.slice(0, 8)}.md` : arg;
         try {
           const body = renderTranscriptMarkdown(linesRef.current, sessionId, soloId);
           const result = await app.tools.write(target, body);
@@ -621,10 +642,12 @@ export function Session({
   };
 
   const runOne = async (input: string): Promise<void> => {
+    const started = Date.now();
     try {
       if (input.startsWith("/")) await runSlash(input);
       else await runTask(input);
     } finally {
+      setLastTurnMs(Date.now() - started);
       const next = queueRef.current.shift();
       setQueued(queueRef.current.length);
       setQueueList([...queueRef.current]);
@@ -735,7 +758,7 @@ export function Session({
       <Box marginTop={1} flexDirection="column">
         <StatusBar
           left={`${council === undefined ? soloId : `${modelIds.length} agents · ${council.mode}`} · thinking=${thinking} · $${cost.toFixed(4)} · ctx ${Math.round(contextPct * 100)}%${queued > 0 ? ` · ${queued} queued` : ""}`}
-          right={`${scrollOffset > 0 ? "scrolled" : "live"}${find !== undefined ? ` · find "${find.needle}" ${find.pos + 1}/${find.matches.length}` : ""}${sidebarCollapsed ? " · sidebar hidden (Ctrl+B)" : ""}`}
+          right={`${scrollOffset > 0 ? "scrolled" : "live"}${lastTurnMs === undefined ? "" : ` · took ${formatElapsed(lastTurnMs)}`}${find !== undefined ? ` · find "${find.needle}" ${find.pos + 1}/${find.matches.length}` : ""}${sidebarCollapsed ? " · sidebar hidden (Ctrl+B)" : ""}`}
         />
         <ShortcutsBar narrow={narrow} />
       </Box>

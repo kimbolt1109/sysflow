@@ -22,5 +22,5 @@ export function renderTranscriptMarkdown(
       return `> ${line.text}`;
     })
     .join("\n\n");
-  return `# Flow transcript\n\nsession: ${sessionId}\nmodel: ${model}\n\n${body}\n`;
+  return `# Sys transcript\n\nsession: ${sessionId}\nmodel: ${model}\n\n${body}\n`;
 }

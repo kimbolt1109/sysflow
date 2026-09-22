@@ -22,6 +22,7 @@ import { matchRouting } from "@/domain/routing.js";
 import type { SkillDef } from "@/domain/skills.js";
 import { thinkingDirective, type ThinkingLevel } from "@/domain/thinking.js";
 import { extractLessons, lessonsContext } from "@/domain/learnings.js";
+import { formatDecisions } from "@/domain/decide.js";
 import type { SubagentDef } from "@/domain/subagents.js";
 import type { ToolsPort } from "@/domain/toolDefs.js";
 import { runToolLoop, TOOL_SYSTEM, type ToolCheck } from "@/infrastructure/agentLoop.js";
@@ -42,8 +43,10 @@ import {
   saveDiscoveryCache,
 } from "@/infrastructure/discovery.js";
 import { DriverAgent } from "@/infrastructure/driverAgent.js";
+import { RetryDriver } from "@/infrastructure/retryDriver.js";
 import { fetchPageText } from "@/lib/webfetch.js";
 import { openBrowser } from "@/lib/browser.js";
+import { answerQuestions } from "@/infrastructure/layaClient.js";
 import { HookRunner, loadHooks } from "@/infrastructure/hookRunner.js";
 import { probeKeychain } from "@/infrastructure/keychain.js";
 import { LocalTools } from "@/infrastructure/localTools.js";
@@ -129,25 +132,43 @@ export interface UsageRecord {
 function nativeDriverFor(config: Config, fetchFn?: typeof fetch): Driver | undefined {
   const provider = config.defaultModel.split("/")[0] ?? "";
   if (provider === "anthropic" && config.auth.anthropic !== undefined) {
-    return new AnthropicDriver({
-      apiKey: config.auth.anthropic,
-      model: config.defaultModel,
-      fetchFn,
-    });
+    return withRetries(
+      new AnthropicDriver({
+        apiKey: config.auth.anthropic,
+        model: config.defaultModel,
+        fetchFn,
+      }),
+    );
   }
   if (provider === "openai" && config.auth.openai !== undefined) {
-    return createOpenaiDriver(config.defaultModel, config.auth.openai, fetchFn);
+    return withRetries(createOpenaiDriver(config.defaultModel, config.auth.openai, fetchFn));
   }
   if (provider === "google" && config.auth.google !== undefined) {
-    return new GoogleDriver({ apiKey: config.auth.google, model: config.defaultModel, fetchFn });
+    return withRetries(
+      new GoogleDriver({ apiKey: config.auth.google, model: config.defaultModel, fetchFn }),
+    );
   }
   if (provider === "openrouter" && config.auth.openrouter !== undefined) {
-    return createOpenrouterDriver(config.defaultModel, config.auth.openrouter, fetchFn);
+    return withRetries(
+      createOpenrouterDriver(config.defaultModel, config.auth.openrouter, fetchFn),
+    );
   }
   if (provider === "ollama") {
-    return createOllamaDriver(config.defaultModel, config.ollamaBaseUrl, fetchFn);
+    return withRetries(createOllamaDriver(config.defaultModel, config.ollamaBaseUrl, fetchFn));
   }
   return undefined;
+}
+
+/** API drivers retry 429s, 5xx, and network blips (CLI/mock drivers excluded:
+ * re-running local commands could repeat side effects). */
+function withRetries(driver: Driver): Driver {
+  return new RetryDriver(driver, {
+    onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
+      process.stderr.write(
+        `[retry ${attempt}/${maxAttempts} in ${(delayMs / 1000).toFixed(1)}s: ${error.slice(0, 160)}]\n`,
+      );
+    },
+  });
 }
 
 export function cliDriverFor(
@@ -272,6 +293,7 @@ export function createDriverAgents(
               ? app.askUser(question, options)
               : "question unavailable (non-interactive session)",
           mcp: app.mcp,
+          layaUrl: app.config.layaUrl,
           hooks,
         },
       ),
@@ -378,6 +400,7 @@ export function createApp(
           sessions,
           dataDir: config.dataDir,
           projectDir: config.projectDir,
+          layaUrl: config.layaUrl,
         },
         name,
         prompt,
@@ -434,6 +457,7 @@ async function runSubagentTask(
     sessions: SessionStore;
     dataDir: string;
     projectDir: string;
+    layaUrl?: string;
   },
   name: string,
   prompt: string,
@@ -462,6 +486,8 @@ async function runSubagentTask(
     },
     onWebfetch: (url) => fetchPageText(url),
     onBrowse: (url) => openBrowser(url),
+    onDecide: async (state, questions) =>
+      formatDecisions((await answerQuestions(deps.layaUrl, state, questions)).answers),
   });
   return result.answer;
 }

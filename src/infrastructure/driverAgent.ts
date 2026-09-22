@@ -13,6 +13,8 @@ import type { SubagentDef } from "@/domain/subagents.js";
 import type { ToolsPort } from "@/domain/toolDefs.js";
 import { fetchPageText } from "@/lib/webfetch.js";
 import { openBrowser } from "@/lib/browser.js";
+import { answerQuestions } from "@/infrastructure/layaClient.js";
+import { formatDecisions, type DecisionQuestion } from "@/domain/decide.js";
 import {
   runToolLoop,
   TOOL_SYSTEM,
@@ -30,6 +32,7 @@ export interface AgentExtras {
   hooks?: LoopHooks;
   fetchFn?: typeof fetch;
   openPage?: (url: string) => Promise<string>;
+  layaUrl?: string;
 }
 
 const MAX_SUBAGENT_DEPTH = 1;
@@ -57,6 +60,7 @@ export class DriverAgent implements Orchestrant {
   private readonly hooks?: LoopHooks;
   private readonly fetchFn: typeof fetch;
   private readonly openPage: (url: string) => Promise<string>;
+  private readonly layaUrl?: string;
 
   constructor(
     readonly name: string,
@@ -74,6 +78,7 @@ export class DriverAgent implements Orchestrant {
     this.hooks = extras.hooks;
     this.fetchFn = extras.fetchFn ?? fetch;
     this.openPage = extras.openPage ?? ((url) => openBrowser(url));
+    this.layaUrl = extras.layaUrl;
   }
 
   private ask(system: string, user: string): Promise<string> {
@@ -100,6 +105,7 @@ export class DriverAgent implements Orchestrant {
         onQuestion: this.onQuestion,
         onWebfetch: (url) => fetchPageText(url, this.fetchFn),
         onBrowse: (url) => this.openPage(url),
+        onDecide: (state, questions) => this.decideQuestions(state, questions),
         onListMcpTools: () => this.listMcpTools(),
         maxTurns: 6,
       },
@@ -140,6 +146,7 @@ export class DriverAgent implements Orchestrant {
       onQuestion: this.onQuestion,
       onWebfetch: (url) => fetchPageText(url, this.fetchFn),
       onBrowse: (url) => this.openPage(url),
+      onDecide: (state, questions) => this.decideQuestions(state, questions),
       onMcpTool: (name, args) => this.callMcp(name, args),
       onListMcpTools: () => this.listMcpTools(),
     });
@@ -172,6 +179,7 @@ export class DriverAgent implements Orchestrant {
         onQuestion: this.onQuestion,
         onWebfetch: (url) => fetchPageText(url, this.fetchFn),
         onBrowse: (url) => this.openPage(url),
+        onDecide: (state, questions) => this.decideQuestions(state, questions),
         onMcpTool: (name, args) => this.callMcp(name, args),
         onListMcpTools: () => this.listMcpTools(),
         maxTurns: 8,
@@ -183,6 +191,14 @@ export class DriverAgent implements Orchestrant {
   private async callMcp(name: string, args: unknown): Promise<string> {
     if (this.mcp === undefined) return `mcp unavailable: ${name} (no MCP servers configured)`;
     return this.mcp.call(name, args);
+  }
+
+  private async decideQuestions(
+    state: string,
+    questions: Record<string, DecisionQuestion>,
+  ): Promise<string> {
+    const { answers } = await answerQuestions(this.layaUrl, state, questions);
+    return formatDecisions(answers);
   }
 
   private async listMcpTools(): Promise<string> {
@@ -208,6 +224,7 @@ export class DriverAgent implements Orchestrant {
         onQuestion: this.onQuestion,
         onWebfetch: (url) => fetchPageText(url, this.fetchFn),
         onBrowse: (url) => this.openPage(url),
+        onDecide: (state, questions) => this.decideQuestions(state, questions),
         onListMcpTools: () => this.listMcpTools(),
         maxTurns: 4,
       },
@@ -231,6 +248,7 @@ export class DriverAgent implements Orchestrant {
         onQuestion: this.onQuestion,
         onWebfetch: (url) => fetchPageText(url, this.fetchFn),
         onBrowse: (url) => this.openPage(url),
+        onDecide: (state, questions) => this.decideQuestions(state, questions),
         onListMcpTools: () => this.listMcpTools(),
         maxTurns: 4,
       },

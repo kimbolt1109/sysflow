@@ -81,7 +81,7 @@ async function main(): Promise<number> {
     return 0;
   }
   if (args.command === "version") {
-    process.stdout.write(`flow ${VERSION}\n`);
+    process.stdout.write(`sys ${VERSION}\n`);
     return 0;
   }
 
@@ -117,11 +117,13 @@ async function main(): Promise<number> {
     case "config":
       return cmdConfig(app, args.rest);
     case "update":
-      process.stdout.write("flow updates via npm (M8 publishes flow-ai-cli)\n");
+      process.stdout.write("sys updates via npm (sysflow package)\n");
       return 0;
     case "tui": {
       if (!process.stdin.isTTY) {
-        process.stderr.write("tui needs an interactive terminal\n");
+        process.stderr.write(
+          'sys needs an interactive terminal (try sys -p "task" or sys --help)\n',
+        );
         return 2;
       }
       const permission: { current: PermissionMode } = {
@@ -178,7 +180,7 @@ async function main(): Promise<number> {
     }
     case "repl": {
       if (!process.stdin.isTTY) {
-        process.stderr.write('no prompt given (use flow -p "task" for non-interactive mode)\n');
+        process.stderr.write('no prompt given (use sys -p "task" for non-interactive mode)\n');
         return 2;
       }
       const needsPicker =
@@ -253,7 +255,7 @@ async function cmdMcp(app: FlowApp, rest: string[]): Promise<number> {
     const [, name, , ...cmd] = more as [string, string, string, ...string[]];
     const command = cmd[0];
     if (name === undefined || command === undefined) {
-      process.stderr.write("usage: flow mcp add stdio <name> -- <command> [args...]\n");
+      process.stderr.write("usage: sys mcp add stdio <name> -- <command> [args...]\n");
       return 2;
     }
     saveMcpServer(app.config.dataDir, { name, transport: "stdio", command, args: cmd.slice(1) });
@@ -276,7 +278,7 @@ async function cmdMcp(app: FlowApp, rest: string[]): Promise<number> {
     return removed ? 0 : 1;
   }
   process.stderr.write(
-    "usage: flow mcp [list|add stdio <name> -- <cmd>|add http|sse <name> <url>|remove <name>]\n",
+    "usage: sys mcp [list|add stdio <name> -- <cmd>|add http|sse <name> <url>|remove <name>]\n",
   );
   return 2;
 }
@@ -296,7 +298,7 @@ async function cmdConfig(app: FlowApp, rest: string[]): Promise<number> {
     app.editPath(userSettingsPath(app.config.dataDir), app.config.editor);
     return 0;
   }
-  process.stderr.write("usage: flow config [get [key]|set defaultModel <id>|edit]\n");
+  process.stderr.write("usage: sys config [get [key]|set defaultModel <id>|edit]\n");
   return 2;
 }
 

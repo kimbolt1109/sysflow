@@ -1,5 +1,7 @@
 import type { Driver } from "@/domain/drivers.js";
 import type { HookDecision } from "@/domain/hooks.js";
+import type { DecisionQuestion } from "@/domain/decide.js";
+import { parseDecisionQuestions } from "@/infrastructure/layaClient.js";
 import { parseMcpToolName } from "@/domain/mcp.js";
 import type { ChatMessage, TokenUsage } from "@/domain/models.js";
 import {
@@ -61,6 +63,8 @@ export const TOOL_SYSTEM = [
   "mcp__server__tool {arguments}.",
   "Test web work with the real flow: start the app detached, browse its URL,",
   "screenshot to see it, then click/type through everything that matters.",
+  "decide {questions, state?} (choice/score/yes-no judgments without an LLM call;",
+  "set APP_LAYA_URL for a Laya decision server, else a local heuristic answers).",
   "One call per fence; you may emit several. Text outside fences is your reply.",
 ].join("\n");
 
@@ -89,6 +93,7 @@ export async function runToolLoop(
     onQuestion?: (question: string, options: string[]) => Promise<string>;
     onWebfetch?: (url: string) => Promise<string>;
     onBrowse?: (url: string) => Promise<string>;
+    onDecide?: (state: string, questions: Record<string, DecisionQuestion>) => Promise<string>;
     onListMcpTools?: () => Promise<string>;
     onMcpTool?: (namespaced: string, args: unknown) => Promise<string>;
   } = {},
@@ -162,6 +167,8 @@ export async function runToolLoop(
       output = await runWebfetchCall(call.input);
     } else if (call.name === "browse") {
       output = await runBrowseCall(call.input);
+    } else if (call.name === "decide") {
+      output = await runDecideCall(call.input);
     } else if (call.name === "mcp") {
       output = await runMcpListCall();
     } else if (parseMcpToolName(call.name) !== undefined) {
@@ -230,6 +237,18 @@ export async function runToolLoop(
       return await opts.onBrowse(url);
     } catch (err) {
       return `browse failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  async function runDecideCall(input: Record<string, unknown>): Promise<string> {
+    const parsed = parseDecisionQuestions(input.questions);
+    if (typeof parsed === "string") return parsed;
+    if (opts.onDecide === undefined) return "decide unavailable (no decision backend configured)";
+    const state = typeof input.state === "string" ? input.state : "";
+    try {
+      return await opts.onDecide(state, parsed);
+    } catch (err) {
+      return `decide failed: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
@@ -306,6 +325,7 @@ async function runLocalTool(tools: ToolsPort, call: ToolCall): Promise<ToolResul
     case "webfetch":
     case "mcp":
     case "browse":
+    case "decide":
       return { ok: false, output: `${call.name} is handled by the loop` };
   }
 }

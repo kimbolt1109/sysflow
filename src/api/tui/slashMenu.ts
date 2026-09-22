@@ -24,6 +24,7 @@ const BUILTINS: SlashEntry[] = [
   { command: "/context", hint: "context window usage", group: "builtin" },
   { command: "/find", hint: "search the transcript, repeat to cycle", group: "builtin" },
   { command: "/dump", hint: "save the transcript to markdown", group: "builtin" },
+  { command: "/triage", hint: "route and score text in one pass", group: "builtin" },
   { command: "/exit", hint: "leave the session", group: "builtin", aliases: ["/quit"] },
 ];
 

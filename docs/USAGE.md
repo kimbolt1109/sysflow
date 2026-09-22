@@ -1,37 +1,38 @@
-# USAGE — Flow user guide
+# USAGE — Sys user guide
 
 ## Entry points
 
-The picker lists every known model: the `flow.json` registry plus live
+`sys` opens the full-screen session directly. The picker lists every known
+model: the `flow.json` registry plus live
 discovery from your installed tools (`opencode models`, `agy models`,
 `grok models`, Ollama `/api/tags`, OpenRouter's catalog), cached for
 30 minutes in `~/.flow/discovered.json`. Navigate with ↑↓, type to
 filter, Enter/Space toggles, `a` toggles a provider group, `m` confirms
 the selected agents, Esc cancels (Esc clears the filter first).
 Recently picked models sit in a `recent` group on top.
-Then pick the thinking level (`low|medium|high|xhigh`, steered via the
-system prompt so it works on any model) and the orchestration mode.
-Selected models remember themselves for next time.
+Then pick the orchestration mode and the thinking level
+(`low|medium|high|xhigh`, steered via the system prompt so it works on
+any model). Selected models remember themselves for next time.
 
 ```
-flow                          # model picker → REPL (solo or council)
-flow tui                      # full-screen UI: picker → mode → session
-flow --model openai/gpt-5     # skip the picker
-flow --models a,b --mode council
-flow models [--refresh]       # registry + live discovery (opencode/agy/grok/ollama/openrouter)
-flow -c / flow -r [id]        # continue latest / resume (picker with previews: flow sessions)
-flow -p "task" [--agents a,b] [--mode council|relay|workers|auto]
+sys                           # full-screen session (default)
+sys repl                      # classic readline session
+sys --model openai/gpt-5      # skip the picker
+sys --model a,b --mode council
+sys models [--refresh]        # registry + live discovery (opencode/agy/grok/ollama/openrouter)
+sys repl -c / sys repl -r [id] # continue latest / resume (repl)
+sys -p "task" [--agents a,b] [--mode council|relay|workers|auto]
   [--output-format text|json|stream-json] [--max-cost N] [--json] [--no-notify]
-flow models | flow doctor | flow sessions
-flow mcp [list|add stdio <name> -- <cmd>|add http|sse <name> <url>|remove <name>]
-flow config [get [key]|set defaultModel <id>|edit]
-flow update                   # via npm (flow-ai-cli)
+sys models | sys doctor | sys sessions
+sys mcp [list|add stdio <name> -- <cmd>|add http|sse <name> <url>|remove <name>]
+sys config [get [key]|set defaultModel <id>|edit]
+sys update                    # via npm (sysflow)
 ```
 
 Flags: `-y/--yolo/--dangerously-skip-permissions`, `--permission-mode
 default|acceptEdits|plan|bypassPermissions`, `--permission-mode`, `--verbose`.
 
-## TUI (`flow tui`)
+## TUI (`sys`)
 
 Full-screen UI: model picker (`Enter`/`Space` toggle, `m` done, `recent`
 group on top) → mode select → thinking level → session with transcript,
@@ -109,6 +110,16 @@ subagents from `.flow/agents/*.md` (depth-capped, tool-filtered).
 - Web: agents fetch pages as text with the `webfetch` tool (HTML
   stripped, capped); rules like `WebFetch(domain:github.com)` gate it.
   Subagents inherit MCP, skills, and web access from their parent.
+- Decisions: choice/score/yes-no judgments without an LLM call — the
+  `decide` tool (local heuristic engine, instant and offline), `/triage`
+  for one-pass routing, and automatic guard screening that flags risky
+  prompts without blocking. Point `APP_LAYA_URL` at a Laya-compatible
+  decision server for model-grade answers.
+- Reliability: native API drivers retry 429s (honoring `retry-after`),
+  5xx, and network blips — 3 attempts with backoff, announced on stderr
+  as `[retry 1/3 in 2.0s: …]`; only pre-token failures retry, so output
+  never duplicates. Turns report their duration (TUI status bar, REPL
+  `[took 12s]`); the TUI spinner shows live elapsed while working.
 - Permissions: approve-by-default — only destructive acts ask
   (`rm -rf`, recursive deletes, `git clean -fdx`, `git reset --hard`,
   …). Rules like `Bash(git commit:*)`, `deny Click(*)`; last match

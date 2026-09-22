@@ -23,6 +23,7 @@ export interface Config {
   compactThreshold: number;
   quotaThresholds: BudgetThresholds;
   ollamaBaseUrl: string;
+  layaUrl?: string;
   editor: string;
   uiTheme?: string;
   noColor: boolean;
@@ -224,6 +225,7 @@ export function loadConfig(
       env.APP_OLLAMA_BASE_URL && env.APP_OLLAMA_BASE_URL !== ""
         ? env.APP_OLLAMA_BASE_URL
         : "http://localhost:11434/v1",
+    layaUrl: nonempty(env.APP_LAYA_URL),
     editor:
       nonempty(env.EDITOR) ??
       nonempty(env.VISUAL) ??

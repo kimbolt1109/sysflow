@@ -41,7 +41,7 @@ export function ModePicker({ defaultMode, onDone, onCancel }: ModePickerProps): 
     <Box flexDirection="column">
       <Box>
         <Text bold color="green">
-          ◆ flow
+          ◆ sys
         </Text>
         <Text bold> · Select mode</Text>
         <Text dimColor> (2/3)</Text>

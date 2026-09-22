@@ -50,6 +50,7 @@ describe("slashMenu", () => {
     expect(commands).toContain("/approve");
     expect(commands).toContain("/find");
     expect(commands).toContain("/dump");
+    expect(commands).toContain("/triage");
   });
 
   it("filters on the slash prefix without spaces", () => {

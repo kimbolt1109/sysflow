@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { helpText, parseArgv } from "@/api/cli.js";
 
 describe("cli", () => {
-  it("defaults to the repl", () => {
-    expect(parseArgv([]).command).toBe("repl");
+  it("defaults to the tui", () => {
+    expect(parseArgv([]).command).toBe("tui");
+    expect(parseArgv(["repl"]).command).toBe("repl");
   });
 
   it("parses headless prompts and agents", () => {
@@ -39,6 +40,6 @@ describe("cli", () => {
   });
 
   it("documents the cli surface", () => {
-    expect(helpText()).toContain("flow -p");
+    expect(helpText()).toContain("sys -p");
   });
 });
