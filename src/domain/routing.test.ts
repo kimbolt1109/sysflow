@@ -57,4 +57,11 @@ describe("routing", () => {
   it("uses the built-in opencode fallback when no rule matches", () => {
     expect(matchRouting([], "any/model").command).toBe("opencode");
   });
+
+  it("treats ? as a single-character wildcard like permissions", () => {
+    const rules: RoutingRule[] = [{ match: "model-?", driver: "cli", command: "m" }];
+
+    expect(matchRouting(rules, "model-a").command).toBe("m");
+    expect(matchRouting(rules, "model-ab").command).toBe("opencode");
+  });
 });

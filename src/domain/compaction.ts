@@ -75,9 +75,16 @@ export function compactHistory(
   if (focus !== undefined && focus !== "") {
     summary += `\n\n## Compact focus\n${focus.slice(0, 1000)}`;
   }
+  const leadingSystems = elided.slice(0, firstNonSystem(elided)).filter((m) => m.role === "system");
   const history: ChatMessage[] = [
+    ...leadingSystems,
     { role: "system", content: summary },
     ...elided.slice(-keepVerbatim),
   ];
   return { history, compacted: true, summary };
+}
+
+function firstNonSystem(messages: ChatMessage[]): number {
+  const at = messages.findIndex((m) => m.role !== "system");
+  return at < 0 ? messages.length : at;
 }

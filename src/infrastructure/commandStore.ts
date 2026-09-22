@@ -8,12 +8,16 @@ function discoverDir(dir: string): CustomCommand[] {
   const found: CustomCommand[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-    const text = readFileSync(join(dir, entry.name), "utf8");
-    found.push({
-      name: entry.name.slice(0, -".md".length),
-      template: parseFrontmatter(text).body,
-      source: `${dir}/${entry.name}`,
-    });
+    try {
+      const text = readFileSync(join(dir, entry.name), "utf8");
+      found.push({
+        name: entry.name.slice(0, -".md".length),
+        template: parseFrontmatter(text).body,
+        source: `${dir}/${entry.name}`,
+      });
+    } catch {
+      // one bad file must never break command discovery
+    }
   }
   return found;
 }

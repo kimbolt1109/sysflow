@@ -41,13 +41,23 @@ export function notify(title: string, body: string, opts: NotifyOptions = {}): v
         `$mgr = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime]; $docType = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime]; $xml = $docType::new(); $xml.LoadXml('<toast><visual><binding template=''ToastText02''><text id=''1''>${escapeXml(title)}</text><text id=''2''>${escapeXml(body)}</text></binding></visual></toast>'); $mgr::CreateToastNotifier('Flow').Show($xml)`,
       ]);
     } else if (process.platform === "darwin") {
-      run("osascript", ["-e", `display notification "${body}" with title "${title}"`]);
+      run("osascript", [
+        "-e",
+        `display notification "${escapeApple(body)}" with title "${escapeApple(title)}"`,
+      ]);
     } else {
       run("notify-send", [title, body]);
     }
   } catch {
     // notifications are best-effort and never fail the session
   }
+}
+
+export function escapeApple(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/[\r\n]+/g, " ");
 }
 
 export function escapeXml(text: string): string {

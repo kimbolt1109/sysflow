@@ -103,6 +103,10 @@ subagents from `.flow/agents/*.md` (depth-capped, tool-filtered).
   stdin, exit 2 or `{"decision":"block"}` blocks. Events: PreToolUse,
   PostToolUse, UserPromptSubmit, SessionStart, SessionEnd, PreCompact,
   Notification, Stop, AgentStop, AgentMessage, AgentHandoff.
+- Trust: project hooks (`.flow/settings.json`) and project MCP servers
+  (`.flow/mcp.json`) execute local code, so a new project asks once
+  whether to trust them (remembered in `~/.flow/settings.json`); saying
+  no — or running headless — falls back to user-level hooks/MCP only.
 - Review: `/review` diffs via the active model. MCP: `~/.flow/mcp.json`
   - `.flow/mcp.json` (stdio + HTTP/SSE), tools as `mcp__server__tool`,
     callable from agents via fences; agents discover them with the `mcp`

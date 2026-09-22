@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { escapeXml, notify } from "@/infrastructure/notifier.js";
+import { escapeApple, escapeXml, notify } from "@/infrastructure/notifier.js";
 
 describe("notifier", () => {
   it("never throws and shells out best-effort", () => {
@@ -20,5 +20,12 @@ describe("notifier", () => {
 
   it("escapes xml in toast bodies", () => {
     expect(escapeXml(`a<b>&"'c`)).toBe("a&lt;b&gt;&amp;&quot;&apos;c");
+  });
+
+  it("escapes applescript quoting so titles cannot break out", () => {
+    expect(escapeApple('a"b\\c')).toBe('a\\"b\\\\c');
+    expect(escapeApple('" & do shell script "id" & "')).toBe(
+      '\\" & do shell script \\"id\\" & \\"',
+    );
   });
 });

@@ -52,4 +52,44 @@ describe("tui App", () => {
     expect(out).toContain("a/1");
     expect(out).toContain("m done");
   });
+
+  it("skips the picker for CLI-provided models", () => {
+    const out = renderToString(
+      <App
+        app={app}
+        models={[model("a/1", "a")]}
+        notify={false}
+        yolo={false}
+        permission={{ current: "default" }}
+        createAgents={() => []}
+        createDriver={() => {
+          throw new Error("unused");
+        }}
+        initialModels={["a/1"]}
+      />,
+    );
+
+    expect(out).toContain("Select mode");
+    expect(out).not.toContain("Select models");
+  });
+
+  it("skips to thinking when mode is also provided", () => {
+    const out = renderToString(
+      <App
+        app={app}
+        models={[model("a/1", "a")]}
+        notify={false}
+        yolo={false}
+        permission={{ current: "default" }}
+        createAgents={() => []}
+        createDriver={() => {
+          throw new Error("unused");
+        }}
+        initialModels={["a/1", "unknown/model"]}
+        initialMode="solo"
+      />,
+    );
+
+    expect(out).toContain("Thinking level");
+  });
 });

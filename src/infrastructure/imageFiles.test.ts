@@ -40,4 +40,14 @@ describe("imageFiles", () => {
     expect(loadImageParts(undefined)).toEqual([]);
     expect(loadImageParts(paths)).toHaveLength(5);
   });
+
+  it("skips unknown extensions and oversized files", () => {
+    const heic = join(dir, "shot.heic");
+    writeFileSync(heic, PNG);
+    const huge = join(dir, "big.png");
+    writeFileSync(huge, Buffer.alloc(11 * 1024 * 1024));
+
+    expect(loadImageParts([heic])).toEqual([]);
+    expect(loadImageParts([huge])).toEqual([]);
+  });
 });

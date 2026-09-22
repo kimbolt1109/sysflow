@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -45,5 +45,21 @@ describe("SessionStore", () => {
     expect(store.rename("s1", "renamed")).toBe("renamed");
     expect(store.list()).toContain("renamed");
     expect(() => store.rename("renamed", "bad name!")).toThrow("invalid session name");
+  });
+
+  it("rejects path traversal in session ids", () => {
+    expect(() => store.append("../../pwn", { x: 1 })).toThrow("invalid session id");
+    expect(() => store.load("../../pwn")).toThrow("invalid session id");
+  });
+
+  it("skips torn lines instead of losing history", () => {
+    store.append("s1", { type: "user", text: "hi" });
+    appendFileSync(join(store.dir(), "s1.jsonl"), '{"torn":\n', "utf8");
+    store.append("s1", { type: "assistant", text: "hello" });
+
+    expect(store.load("s1")).toEqual([
+      { type: "user", text: "hi" },
+      { type: "assistant", text: "hello" },
+    ]);
   });
 });

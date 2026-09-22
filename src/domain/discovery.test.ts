@@ -53,4 +53,26 @@ describe("discovery merge", () => {
 
     expect(merged.filter((m) => m.id === "x/y")).toHaveLength(1);
   });
+
+  it("overwrites stale registry data on forced refresh", () => {
+    const merged = mergeModels(
+      REGISTRY,
+      [
+        {
+          id: "google/gemini-pro",
+          provider: "google",
+          source: "agy",
+          contextWindow: 2000000,
+          inputPricePerM: 0.5,
+          cliModel: "gemini-3-pro",
+        },
+      ],
+      true,
+    );
+
+    const refreshed = merged[0] as ModelInfo;
+    expect(refreshed.contextWindow).toBe(2000000);
+    expect(refreshed.inputPricePerM).toBe(0.5);
+    expect(refreshed.cliModel).toBe("gemini-3-pro");
+  });
 });

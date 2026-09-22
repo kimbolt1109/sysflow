@@ -22,6 +22,9 @@ export class SessionStore {
   }
 
   path(sessionId: string): string {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sessionId)) {
+      throw new Error(`invalid session id "${sessionId}" (letters, digits, -, _)`);
+    }
     return join(this.dir(), `${sessionId}.jsonl`);
   }
 
@@ -33,10 +36,16 @@ export class SessionStore {
   load(sessionId: string): unknown[] {
     const file = this.path(sessionId);
     if (!existsSync(file)) return [];
-    return readFileSync(file, "utf8")
-      .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line) => JSON.parse(line) as unknown);
+    const out: unknown[] = [];
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (line.trim() === "") continue;
+      try {
+        out.push(JSON.parse(line) as unknown);
+      } catch {
+        // a torn write must never hide the rest of the history
+      }
+    }
+    return out;
   }
 
   list(): string[] {
@@ -44,6 +53,7 @@ export class SessionStore {
     return readdirSync(this.dir())
       .filter((name) => name.endsWith(".jsonl"))
       .map((name) => name.slice(0, -".jsonl".length))
+      .filter((id) => /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id))
       .sort();
   }
 

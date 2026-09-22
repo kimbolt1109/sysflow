@@ -1,24 +1,30 @@
+import { posix, win32 } from "node:path";
+
 export interface MemoryLayers {
   user: string;
   project: string;
   local: string;
 }
 
+function pathFor(home: string, projectDir: string): typeof posix {
+  return projectDir.includes("\\") || home.includes("\\") ? win32 : posix;
+}
+
 export function memoryPaths(home: string, projectDir: string): MemoryLayers {
-  const sep = projectDir.includes("\\") ? "\\" : "/";
+  const path = pathFor(home, projectDir);
   return {
-    user: `${home}${sep}.flow${sep}FLOW.md`,
-    project: `${projectDir}${sep}.flow${sep}FLOW.md`,
-    local: `${projectDir}${sep}.flow${sep}FLOW.local.md`,
+    user: path.join(home, ".flow", "FLOW.md"),
+    project: path.join(projectDir, ".flow", "FLOW.md"),
+    local: path.join(projectDir, ".flow", "FLOW.local.md"),
   };
 }
 
 export function legacyMemoryCandidates(projectDir: string): string[] {
-  const sep = projectDir.includes("\\") ? "\\" : "/";
-  return ["CLAUDE.md", "AGENTS.md", "GEMINI.md"].map((name) => `${projectDir}${sep}${name}`);
+  const path = pathFor(projectDir, projectDir);
+  return ["CLAUDE.md", "AGENTS.md", "GEMINI.md"].map((name) => path.join(projectDir, name));
 }
 
-const AT_FILE = /(^|\s)@([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+)/g;
+const AT_FILE = /(^|\s)@([A-Za-z0-9_./\\: -]+\.[A-Za-z0-9]+)/g;
 
 export function expandAtFiles(
   text: string,

@@ -293,13 +293,23 @@ export class CliDriver implements Driver {
       const track = (child: ReturnType<typeof spawn>): void => {
         let stdout = "";
         let stderr = "";
-        child.stdout?.on("data", (chunk: Buffer) => {
-          const text = chunk.toString("utf8");
-          stdout += text;
+        let truncated = false;
+        const cap = 2 * 1024 * 1024;
+        const pushStdout = (text: string): void => {
           onStdout(text);
+          if (stdout.length >= cap) {
+            truncated = true;
+            return;
+          }
+          stdout += text.slice(0, cap - stdout.length);
+        };
+        child.stdout?.on("data", (chunk: Buffer) => {
+          pushStdout(chunk.toString("utf8"));
         });
         child.stderr?.on("data", (chunk: Buffer) => {
-          stderr += chunk.toString("utf8");
+          const text = chunk.toString("utf8");
+          if (stderr.length < cap) stderr += text.slice(0, cap - stderr.length);
+          else truncated = true;
         });
         child.on("error", (err) => {
           reject(new DriverError(`${this.command} failed to start: ${err.message}`));
@@ -313,6 +323,7 @@ export class CliDriver implements Driver {
             );
             return;
           }
+          if (truncated) stdout += "\n…[output truncated at 2MB]";
           resolvePromise({ stdout, stderr, code: code ?? 1 });
         });
       };

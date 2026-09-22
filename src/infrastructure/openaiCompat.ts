@@ -2,6 +2,7 @@ import type { ChatMessage, QuotaInfo, TokenUsage } from "@/domain/models.js";
 import type { Driver, SendResult } from "@/domain/drivers.js";
 import { loadImageParts } from "@/infrastructure/imageFiles.js";
 import { AuthError, DriverError, QuotaError } from "@/lib/errors.js";
+import { CHAT_SEND_TIMEOUT_MS, CHAT_STREAM_TIMEOUT_MS, fetchWithTimeout } from "@/lib/fetch.js";
 
 export interface CompatOptions {
   apiKey?: string;
@@ -107,18 +108,23 @@ export class OpenAiCompatDriver implements Driver {
   async sendMessage(messages: ChatMessage[]): Promise<SendResult> {
     let res: Response;
     try {
-      res = await this.fetchFn(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
-          model: this.id.includes("/") ? this.id.split("/").slice(1).join("/") : this.id,
-          messages: messages.map((m) => ({
-            role: m.role === "tool" ? "user" : m.role,
-            content: messageContent(m),
-          })),
-          stream: false,
-        }),
-      });
+      res = await fetchWithTimeout(
+        this.fetchFn,
+        `${this.baseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: this.headers(),
+          body: JSON.stringify({
+            model: this.id.includes("/") ? this.id.split("/").slice(1).join("/") : this.id,
+            messages: messages.map((m) => ({
+              role: m.role === "tool" ? "user" : m.role,
+              content: messageContent(m),
+            })),
+            stream: false,
+          }),
+        },
+        CHAT_SEND_TIMEOUT_MS,
+      );
     } catch (err) {
       throw new DriverError(
         `${this.provider} network error: ${err instanceof Error ? err.message : String(err)}`,
@@ -130,6 +136,7 @@ export class OpenAiCompatDriver implements Driver {
       usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
     };
     const text = textOf(data.choices?.[0]?.message?.content ?? "");
+    if (text === "") throw new DriverError(`${this.provider} returned an empty reply`);
     const usage: TokenUsage = {
       input: num(data.usage?.prompt_tokens),
       output: num(data.usage?.completion_tokens),
@@ -145,18 +152,23 @@ export class OpenAiCompatDriver implements Driver {
   ): Promise<SendResult> {
     let res: Response;
     try {
-      res = await this.fetchFn(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
-          model: this.id.includes("/") ? this.id.split("/").slice(1).join("/") : this.id,
-          messages: messages.map((m) => ({
-            role: m.role === "tool" ? "user" : m.role,
-            content: messageContent(m),
-          })),
-          stream: true,
-        }),
-      });
+      res = await fetchWithTimeout(
+        this.fetchFn,
+        `${this.baseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: this.headers(),
+          body: JSON.stringify({
+            model: this.id.includes("/") ? this.id.split("/").slice(1).join("/") : this.id,
+            messages: messages.map((m) => ({
+              role: m.role === "tool" ? "user" : m.role,
+              content: messageContent(m),
+            })),
+            stream: true,
+          }),
+        },
+        CHAT_STREAM_TIMEOUT_MS,
+      );
     } catch (err) {
       throw new DriverError(
         `${this.provider} network error: ${err instanceof Error ? err.message : String(err)}`,
@@ -170,31 +182,38 @@ export class OpenAiCompatDriver implements Driver {
     const decoder = new TextDecoder();
     let buffer = "";
     let text = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === "[DONE]") continue;
-        let event: unknown;
-        try {
-          event = JSON.parse(data);
-        } catch {
-          continue;
-        }
-        const delta = (event as { choices?: Array<{ delta?: { content?: unknown } }> }).choices?.[0]
-          ?.delta?.content;
-        if (typeof delta === "string" && delta !== "") {
-          text += delta;
-          onToken(delta);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === "[DONE]") continue;
+          let event: unknown;
+          try {
+            event = JSON.parse(data);
+          } catch {
+            continue;
+          }
+          const delta = (event as { choices?: Array<{ delta?: { content?: unknown } }> })
+            .choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta !== "") {
+            text += delta;
+            onToken(delta);
+          }
         }
       }
+    } catch (err) {
+      throw new DriverError(
+        `${this.provider} network error: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
+    if (text === "") throw new DriverError(`${this.provider} returned an empty reply`);
     const usage: TokenUsage = { input: 0, output: this.countTokens(text) };
     this.requests += 1;
     this.tokens += usage.input + usage.output;

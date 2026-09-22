@@ -31,6 +31,24 @@ describe("memory", () => {
     expect(expandAtFiles("see @missing.txt", () => undefined)).toContain("@missing.txt");
   });
 
+  it("expands windows paths and spaced names", () => {
+    const win = expandAtFiles("see @C:\\proj\\note.md", (p) =>
+      p === "C:\\proj\\note.md" ? "WIN" : undefined,
+    );
+    expect(win).toContain("WIN");
+
+    const spaced = expandAtFiles("see @my notes.md please", (p) =>
+      p === "my notes.md" ? "SPACED" : undefined,
+    );
+    expect(spaced).toContain("SPACED");
+  });
+
+  it("keeps separators consistent for mixed inputs", () => {
+    const paths = memoryPaths("C:\\Users\\u", "/proj");
+
+    expect(paths.user).toBe("C:\\Users\\u\\.flow\\FLOW.md");
+  });
+
   it("builds a memory block skipping empties", () => {
     expect(buildMemoryBlock([])).toBe("");
     expect(

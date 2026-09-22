@@ -22,7 +22,7 @@ import { skillListing } from "@/domain/skills.js";
 import { subagentListing } from "@/domain/subagents.js";
 import { buildContextUsage, renderContextBars } from "@/domain/tokenizer.js";
 import { formatElapsed } from "@/domain/transcript.js";
-import { runReadTool, runWriteTool } from "@/api/toolCommands.js";
+import { confirmTool, runReadTool, runWriteTool } from "@/api/toolCommands.js";
 import { runToolLoop, TOOL_SYSTEM } from "@/infrastructure/agentLoop.js";
 import { fetchPageText } from "@/lib/webfetch.js";
 import { openBrowser } from "@/lib/browser.js";
@@ -192,6 +192,9 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
         await app.hooks.fire("SessionEnd", { session_id: sessionId });
         await app.hooks.fire("Stop", { session_id: sessionId });
         return 0;
+      }
+      if (typeof done === "object") {
+        sessionId = done.switchSession;
       }
       rl.prompt();
       continue;
@@ -408,8 +411,6 @@ async function maybeCompact(
   history: ChatMessage[],
 ): Promise<boolean> {
   const result = compactHistory(history, contextWindowOf(app), app.config.compactThreshold);
-  history.length = 0;
-  history.push(...result.history);
   if (!result.compacted) return false;
   const pre = await app.hooks.fire("PreCompact", {
     session_id: sessionId,
@@ -419,6 +420,8 @@ async function maybeCompact(
     process.stdout.write(`compact skipped: ${pre.reason}\n`);
     return false;
   }
+  history.length = 0;
+  history.push(...result.history);
   app.sessions.append(sessionId, { type: "compact", summary: result.summary });
   return true;
 }
@@ -491,7 +494,7 @@ async function runSlash(
   input: string,
   opts: ReplOptions,
   costs: { session: number },
-): Promise<"exit" | "continue"> {
+): Promise<"exit" | "continue" | { switchSession: string }> {
   const [cmd, ...rest] = input.slice(1).split(/\s+/);
   const arg = rest.join(" ").trim();
   switch (cmd) {
@@ -667,38 +670,60 @@ async function runSlash(
       }
       return "continue";
     }
-    case "new":
+    case "new": {
       history.length = 0;
-      sessionId = randomUUID();
-      app.sessions.append(sessionId, { type: "session-start", mode, model: app.driver.id });
-      process.stdout.write(`new session ${sessionId.slice(0, 8)}\n`);
-      return "continue";
-    case "rename":
+      costs.session = 0;
+      const next = randomUUID();
+      app.sessions.append(next, { type: "session-start", mode, model: app.driver.id });
+      process.stdout.write(`new session ${next.slice(0, 8)}\n`);
+      return { switchSession: next };
+    }
+    case "rename": {
       if (arg === "") {
         process.stdout.write("usage: /rename <name>\n");
         return "continue";
       }
       try {
-        sessionId = app.sessions.rename(sessionId, arg);
-        process.stdout.write(`renamed → ${sessionId}\n`);
+        const next = app.sessions.rename(sessionId, arg);
+        process.stdout.write(`renamed → ${next}\n`);
+        return { switchSession: next };
       } catch (err) {
         process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
       return "continue";
+    }
     case "copy": {
-      const [nthRaw, ...pathParts] = arg.split(/\s+/).filter((p) => p !== "");
-      const nth = nthRaw === undefined || nthRaw === "" ? 1 : Number(nthRaw);
+      const parts = arg.split(/\s+/).filter((p) => p !== "");
+      let nth = 1;
+      if (parts.length > 0 && /^\d+$/.test(parts[0] as string)) {
+        nth = Math.max(1, Number(parts.shift()));
+      }
       const responses = history.filter((m) => m.role === "assistant").map((m) => m.content);
-      const picked = responses[responses.length - (Number.isInteger(nth) ? nth : 1)];
+      const picked = responses[responses.length - nth];
       if (picked === undefined) {
         process.stdout.write("nothing to copy yet.\n");
         return "continue";
       }
-      const target = pathParts.join(" ");
+      const target = parts.join(" ");
       if (target === "") {
         process.stdout.write(`${picked}\n(copied to output — clipboard needs a TTY helper)\n`);
         return "continue";
       }
+      if (mode === "plan") {
+        process.stdout.write("plan mode: writes are disabled (read-only).\n");
+        return "continue";
+      }
+      const verdict = await confirmTool(
+        app,
+        rl,
+        sessionId,
+        mode,
+        rules,
+        "Write",
+        { path: target },
+        target,
+      );
+      if (verdict !== "allow") return "continue";
       const result = await app.tools.write(target, picked);
       process.stdout.write(`${result.output}\n`);
       return "continue";
@@ -743,25 +768,41 @@ async function runSlash(
         process.stdout.write("no checkpoints yet (taken before council runs and file writes).\n");
         return "continue";
       }
-      if (cmd === "undo" || arg !== "") {
-        try {
-          const touched = await app.restoreCheckpoint(sessionId, cmd === "undo" ? last.id : arg);
-          process.stdout.write(
-            `${cmd === "undo" ? "undone" : "rewound"} → restored ${touched.length} paths.\n`,
-          );
-        } catch (err) {
-          process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+      if (cmd === "rewind" && arg === "") {
+        for (const checkpoint of checkpoints) {
+          process.stdout.write(`${describeCheckpoint(checkpoint)}\n`);
         }
+        process.stdout.write("usage: /rewind <id-prefix>\n");
         return "continue";
       }
-      for (const checkpoint of checkpoints) {
-        process.stdout.write(`${describeCheckpoint(checkpoint)}\n`);
+      const wanted = cmd === "undo" && arg === "" ? last.id : arg;
+      try {
+        const { touched, failed } = await app.restoreCheckpoint(sessionId, wanted);
+        const verb = cmd === "undo" && arg === "" ? "undone" : "rewound";
+        const failures = failed.length > 0 ? ` ${failed.length} failed: ${failed.join("; ")}` : "";
+        process.stdout.write(`${verb} → restored ${touched.length} paths.${failures}\n`);
+      } catch (err) {
+        process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
-      process.stdout.write("usage: /rewind <id-prefix>\n");
       return "continue";
     }
     case "export": {
       const target = arg === "" ? `sys-export-${Date.now()}.md` : arg;
+      if (mode === "plan") {
+        process.stdout.write("plan mode: writes are disabled (read-only).\n");
+        return "continue";
+      }
+      const verdict = await confirmTool(
+        app,
+        rl,
+        sessionId,
+        mode,
+        rules,
+        "Write",
+        { path: target },
+        target,
+      );
+      if (verdict !== "allow") return "continue";
       const body = history.map((m) => `## ${m.role}\n\n${m.content}`).join("\n\n");
       const result = await app.tools.write(target, `# Sys export\n\n${body}\n`);
       process.stdout.write(`${result.output}\n`);

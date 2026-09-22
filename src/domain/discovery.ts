@@ -12,7 +12,11 @@ export interface DiscoveredModel {
   free?: boolean;
 }
 
-export function mergeModels(registry: ModelInfo[], discovered: DiscoveredModel[]): ModelInfo[] {
+export function mergeModels(
+  registry: ModelInfo[],
+  discovered: DiscoveredModel[],
+  overwrite = false,
+): ModelInfo[] {
   const merged = new Map<string, ModelInfo>();
   for (const model of registry) {
     merged.set(model.id, { ...model });
@@ -41,14 +45,20 @@ export function mergeModels(registry: ModelInfo[], discovered: DiscoveredModel[]
     }
     if (existing.contextWindow <= 0 && found.contextWindow !== undefined) {
       existing.contextWindow = found.contextWindow;
+    } else if (overwrite && found.contextWindow !== undefined && found.contextWindow > 0) {
+      existing.contextWindow = found.contextWindow;
     }
     if (existing.inputPricePerM <= 0 && found.inputPricePerM !== undefined) {
+      existing.inputPricePerM = found.inputPricePerM;
+    } else if (overwrite && found.inputPricePerM !== undefined && found.inputPricePerM > 0) {
       existing.inputPricePerM = found.inputPricePerM;
     }
     if (existing.outputPricePerM <= 0 && found.outputPricePerM !== undefined) {
       existing.outputPricePerM = found.outputPricePerM;
+    } else if (overwrite && found.outputPricePerM !== undefined && found.outputPricePerM > 0) {
+      existing.outputPricePerM = found.outputPricePerM;
     }
-    if (found.cliModel !== undefined && existing.cliModel === undefined) {
+    if (found.cliModel !== undefined && (existing.cliModel === undefined || overwrite)) {
       existing.cliModel = found.cliModel;
     }
     if (found.free === true && !existing.tags.includes("free")) {

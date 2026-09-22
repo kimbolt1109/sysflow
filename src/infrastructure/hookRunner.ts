@@ -47,11 +47,16 @@ function loadFile(path: string): HookDef[] {
   return defs;
 }
 
+export function loadUserHooks(dataDir: string): HookDef[] {
+  return loadFile(join(dataDir, "settings.json"));
+}
+
+export function loadProjectHooks(projectDir: string): HookDef[] {
+  return loadFile(join(projectDir, ".flow", "settings.json"));
+}
+
 export function loadHooks(dataDir: string, projectDir: string): HookDef[] {
-  return [
-    ...loadFile(join(dataDir, "settings.json")),
-    ...loadFile(join(projectDir, ".flow", "settings.json")),
-  ];
+  return [...loadUserHooks(dataDir), ...loadProjectHooks(projectDir)];
 }
 
 function runCommand(

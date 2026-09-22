@@ -52,4 +52,18 @@ describe("compaction", () => {
     expect(result.summary).toContain("keep auth details");
     expect(result.history).toHaveLength(3);
   });
+
+  it("carries leading system directives across compaction", () => {
+    const messages: ChatMessage[] = [
+      msg("system", "Reasoning effort: xhigh"),
+      msg("user", "task: rewrite everything"),
+      msg("assistant", "x".repeat(400)),
+    ];
+
+    const result = compactHistory(messages, 100, 0.85, 2);
+
+    expect(result.compacted).toBe(true);
+    expect(result.history[0]).toEqual(msg("system", "Reasoning effort: xhigh"));
+    expect(result.history[1]?.role).toBe("system");
+  });
 });

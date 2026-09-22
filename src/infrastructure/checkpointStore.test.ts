@@ -43,6 +43,7 @@ describe("checkpointStore", () => {
     const touched = await restoreCheckpoint(tools, first);
 
     expect((await tools.read("a.txt")).output).toBe("v1");
-    expect(touched).toContain("a.txt");
+    expect(touched.touched).toContain("a.txt");
+    expect(touched.failed).toEqual([]);
   });
 });

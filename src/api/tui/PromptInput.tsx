@@ -58,7 +58,7 @@ export function PromptInput({
     setEdit(next);
     setMenuIndex(0);
     setMenuBrowsed(false);
-    setMenuDismissed(false);
+    if (next.value !== edit.value) setMenuDismissed(false);
     onChange?.(next.value);
   };
 

@@ -119,7 +119,10 @@ export interface FlowApp {
   takeCheckpoint(sessionId: string, label: string): Promise<Checkpoint>;
   snapshotWorkspace(): Promise<Record<string, string | null>>;
   listCheckpoints(sessionId: string): Checkpoint[];
-  restoreCheckpoint(sessionId: string, id: string): Promise<string[]>;
+  restoreCheckpoint(
+    sessionId: string,
+    id: string,
+  ): Promise<{ touched: string[]; failed: string[] }>;
   diagnose(): Promise<DoctorCheck[]>;
 }
 
@@ -359,7 +362,7 @@ export function createApp(
         saveDiscoveryCache(config.dataDir, live);
       }
       const fresh = loadDiscoveryCache(config.dataDir);
-      models = mergeModels(config.models, fresh !== undefined ? fresh.models : []);
+      models = mergeModels(config.models, fresh !== undefined ? fresh.models : [], force);
       return models;
     },
     memory,
@@ -428,7 +431,11 @@ export function createApp(
     takeCheckpoint: async (sessionId, label) => {
       const snap = await takeWorkspaceSnapshot(tools, label);
       const entries = Object.entries(snap.files).map(([path, content]) => ({ path, content }));
-      const checkpoint = takeCheckpointData(randomUUID(), snap.label, entries);
+      const checkpoint = takeCheckpointData(
+        randomUUID(),
+        snap.truncated ? `${snap.label} (partial snapshot)` : snap.label,
+        entries,
+      );
       const dir = checkpointDir(config.dataDir, config.projectDir, sessionId);
       saveCheckpoint(dir, checkpoint);
       return checkpoint;

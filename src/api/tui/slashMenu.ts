@@ -25,6 +25,18 @@ const BUILTINS: SlashEntry[] = [
   { command: "/find", hint: "search the transcript, repeat to cycle", group: "builtin" },
   { command: "/dump", hint: "save the transcript to markdown", group: "builtin" },
   { command: "/triage", hint: "route and score text in one pass", group: "builtin" },
+  { command: "/status", hint: "per-provider quotas and usage", group: "builtin" },
+  { command: "/compact", hint: "summarize transcript, keep recent window", group: "builtin" },
+  { command: "/undo", hint: "restore the last checkpoint", group: "builtin" },
+  { command: "/rewind", hint: "list or restore a checkpoint", group: "builtin" },
+  { command: "/sessions", hint: "list sessions with previews", group: "builtin" },
+  { command: "/tasks", hint: "activity counts for this session", group: "builtin" },
+  { command: "/export", hint: "write the transcript to markdown", group: "builtin" },
+  { command: "/init", hint: "create project memory file", group: "builtin" },
+  { command: "/memory", hint: "list memory files", group: "builtin" },
+  { command: "/permissions", hint: "show or add permission rules", group: "builtin" },
+  { command: "/reload", hint: "reload skills, subagents, commands", group: "builtin" },
+  { command: "/review", hint: "review the working-tree diff", group: "builtin" },
   { command: "/exit", hint: "leave the session", group: "builtin", aliases: ["/quit"] },
 ];
 

@@ -2,6 +2,7 @@ import type { ChatMessage, QuotaInfo, TokenUsage } from "@/domain/models.js";
 import type { Driver, SendResult } from "@/domain/drivers.js";
 import { loadImageParts } from "@/infrastructure/imageFiles.js";
 import { AuthError, DriverError, QuotaError } from "@/lib/errors.js";
+import { CHAT_SEND_TIMEOUT_MS, CHAT_STREAM_TIMEOUT_MS, fetchWithTimeout } from "@/lib/fetch.js";
 
 export interface AnthropicOptions {
   apiKey: string;
@@ -146,15 +147,20 @@ export class AnthropicDriver implements Driver {
   async sendMessage(messages: ChatMessage[]): Promise<SendResult> {
     let res: Response;
     try {
-      res = await this.fetchFn(`${this.baseUrl}/v1/messages`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": this.apiKey,
-          "anthropic-version": "2023-06-01",
+      res = await fetchWithTimeout(
+        this.fetchFn,
+        `${this.baseUrl}/v1/messages`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": this.apiKey,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify(this.toPayload(messages, false)),
         },
-        body: JSON.stringify(this.toPayload(messages, false)),
-      });
+        CHAT_SEND_TIMEOUT_MS,
+      );
     } catch (err) {
       throw new DriverError(
         `anthropic network error: ${err instanceof Error ? err.message : String(err)}`,
@@ -167,7 +173,9 @@ export class AnthropicDriver implements Driver {
       input: num(data.usage?.input_tokens),
       output: num(data.usage?.output_tokens),
     };
-    return { text: textOf(data.content), usage };
+    const text = textOf(data.content);
+    if (text === "") throw new DriverError("anthropic returned an empty reply");
+    return { text, usage };
   }
 
   async streamMessage(
@@ -176,15 +184,20 @@ export class AnthropicDriver implements Driver {
   ): Promise<SendResult> {
     let res: Response;
     try {
-      res = await this.fetchFn(`${this.baseUrl}/v1/messages`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": this.apiKey,
-          "anthropic-version": "2023-06-01",
+      res = await fetchWithTimeout(
+        this.fetchFn,
+        `${this.baseUrl}/v1/messages`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": this.apiKey,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify(this.toPayload(messages, true)),
         },
-        body: JSON.stringify(this.toPayload(messages, true)),
-      });
+        CHAT_STREAM_TIMEOUT_MS,
+      );
     } catch (err) {
       throw new DriverError(
         `anthropic network error: ${err instanceof Error ? err.message : String(err)}`,
@@ -200,43 +213,50 @@ export class AnthropicDriver implements Driver {
     let text = "";
     let input = 0;
     let output = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === "[DONE]") continue;
-        let event: unknown;
-        try {
-          event = JSON.parse(data);
-        } catch {
-          continue;
-        }
-        if (typeof event !== "object" || event === null) continue;
-        const e = event as Record<string, unknown>;
-        if (e.type === "content_block_delta") {
-          const delta = e.delta as Record<string, unknown> | undefined;
-          if (typeof delta?.text === "string") {
-            text += delta.text;
-            onToken(delta.text);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === "[DONE]") continue;
+          let event: unknown;
+          try {
+            event = JSON.parse(data);
+          } catch {
+            continue;
           }
-        } else if (e.type === "message_start") {
-          const message = e.message as { usage?: AnthropicUsage } | undefined;
-          input += num(message?.usage?.input_tokens);
-        } else if (e.type === "message_delta") {
-          const usage = e.usage as AnthropicUsage | undefined;
-          output += num(usage?.output_tokens);
+          if (typeof event !== "object" || event === null) continue;
+          const e = event as Record<string, unknown>;
+          if (e.type === "content_block_delta") {
+            const delta = e.delta as Record<string, unknown> | undefined;
+            if (typeof delta?.text === "string") {
+              text += delta.text;
+              onToken(delta.text);
+            }
+          } else if (e.type === "message_start") {
+            const message = e.message as { usage?: AnthropicUsage } | undefined;
+            input += num(message?.usage?.input_tokens);
+          } else if (e.type === "message_delta") {
+            const usage = e.usage as AnthropicUsage | undefined;
+            output += num(usage?.output_tokens);
+          }
         }
       }
+    } catch (err) {
+      throw new DriverError(
+        `anthropic network error: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     this.requests += 1;
     this.inputTokens += input;
     this.outputTokens += output;
+    if (text === "") throw new DriverError("anthropic returned an empty reply");
     return { text, usage: { input, output } };
   }
 }

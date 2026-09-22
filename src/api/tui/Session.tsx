@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { FlowApp } from "@/app.js";
 import { CouncilSession } from "@/api/council.js";
-import { renderCost } from "@/api/costView.js";
+import { renderCost, renderStatus } from "@/api/costView.js";
 import { buildSlashCatalog, resolveSlashAlias } from "@/api/tui/slashMenu.js";
 import { PromptInput } from "@/api/tui/PromptInput.js";
 import { buildSkillTask, renderTranscriptMarkdown } from "@/api/tui/sessionTurn.js";
@@ -20,6 +20,10 @@ import {
   type TranscriptLine,
 } from "@/api/tui/SessionView.js";
 import { substituteArgs } from "@/domain/commands.js";
+import { describeCheckpoint } from "@/domain/checkpoints.js";
+import { compactHistory } from "@/domain/compaction.js";
+import { parseRule } from "@/domain/permissions.js";
+import { sessionPreview } from "@/domain/sessions.js";
 import { formatMcpInventory } from "@/domain/mcp.js";
 import type { Checkpoint } from "@/domain/checkpoints.js";
 import { diffCheckpoints } from "@/domain/diff.js";
@@ -134,6 +138,7 @@ export function Session({
     session.mode = mode;
     if (lead !== undefined) session.lead = lead;
     return session;
+    // Session mounts once per model/mode selection; props are fixed for its lifetime.
   }, [sessionId]);
 
   const catalog = useMemo(
@@ -416,7 +421,8 @@ export function Session({
 
   const runSlash = async (raw: string): Promise<void> => {
     const [rawCmd, ...rest] = raw.slice(1).split(/\s+/);
-    const cmd = resolveSlashAlias(`/${rawCmd ?? ""}`).slice(1);
+    const rawName = resolveSlashAlias(`/${rawCmd ?? ""}`).slice(1);
+    const cmd = rawName.toLowerCase();
     const arg = rest.join(" ").trim();
     switch (cmd) {
       case "exit":
@@ -426,7 +432,7 @@ export function Session({
       case "help":
         push(
           "info",
-          "slash: /clear (/new) /model /models /skills [/name] /agents [/run name prompt] /cost /context /triage text /find text /dump [path] /plan [/approve] /exit (/quit) — plus /<skill> and /<custom>. keys: ↑↓ history and slash menu · Tab accept · \\+Enter newline · PgUp/PgDn scroll · Ctrl+B sidebar · Ctrl+S stash · Shift+Tab permit · Esc Esc help",
+          "slash: /clear (/new) /model /models /skills [/name] /agents [/run name prompt] /cost /status /context /compact /triage text /find text /dump [path] /export [path] /sessions /tasks /undo /rewind [id] /init /memory /permissions [rule] /reload /review /plan [/approve] /exit (/quit) — plus /<skill> and /<custom>. keys: ↑↓ history and slash menu · Tab accept · \\+Enter newline · PgUp/PgDn scroll · Ctrl+B sidebar · Ctrl+S stash · Shift+Tab permit · Esc Esc help",
         );
         return;
       case "clear":
@@ -578,8 +584,166 @@ export function Session({
         push("info", renderContextBars(usage));
         return;
       }
+      case "status":
+        push("info", await renderStatus(app, app.dailyUsage()));
+        return;
+      case "compact": {
+        const result = compactHistory(
+          historyRef.current,
+          contextWindowOf(),
+          app.config.compactThreshold,
+          10,
+          arg === "" ? undefined : arg,
+        );
+        historyRef.current.length = 0;
+        historyRef.current.push(...result.history);
+        app.sessions.append(sessionId, { type: "compact", manual: true, summary: result.summary });
+        push("info", "compacted: summary pinned, recent window kept.");
+        return;
+      }
+      case "undo":
+      case "rewind": {
+        const checkpoints = app.listCheckpoints(sessionId);
+        const last = checkpoints.at(-1);
+        if (last === undefined) {
+          push("info", "no checkpoints yet (taken before turns and file writes).");
+          return;
+        }
+        if (cmd === "rewind" && arg === "") {
+          for (const checkpoint of checkpoints) push("info", describeCheckpoint(checkpoint));
+          push("info", "usage: /rewind <id-prefix>");
+          return;
+        }
+        const wanted = cmd === "undo" && arg === "" ? last.id : arg;
+        try {
+          const { touched, failed } = await app.restoreCheckpoint(sessionId, wanted);
+          const verb = cmd === "undo" && arg === "" ? "undone" : "rewound";
+          push(
+            "info",
+            `${verb} → restored ${touched.length} paths.${failed.length > 0 ? ` ${failed.length} failed: ${failed.join("; ")}` : ""}`,
+          );
+        } catch (err) {
+          push("error", `error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        return;
+      }
+      case "sessions":
+        for (const id of app.sessions.list()) {
+          push("info", `${id}  ${sessionPreview(app.sessions.load(id))}`);
+        }
+        return;
+      case "tasks": {
+        const counts = new Map<string, number>();
+        for (const record of app.sessions.load(sessionId)) {
+          const type =
+            typeof record === "object" && record !== null
+              ? String((record as Record<string, unknown>).type ?? "unknown")
+              : "unknown";
+          counts.set(type, (counts.get(type) ?? 0) + 1);
+        }
+        if (counts.size === 0) {
+          push("info", "no activity yet.");
+          return;
+        }
+        push(
+          "info",
+          [...counts.entries()]
+            .sort()
+            .map(([type, n]) => `${type}: ${n}`)
+            .join("\n"),
+        );
+        return;
+      }
+      case "export": {
+        const target = arg === "" ? `sys-export-${Date.now()}.md` : arg;
+        if (!yolo && permission.current === "plan") {
+          push("info", "plan mode: writes are disabled (read-only).");
+          return;
+        }
+        try {
+          const body = renderTranscriptMarkdown(linesRef.current, sessionId, soloId);
+          const result = await app.tools.write(target, body);
+          push("info", result.output === "" ? `wrote ${target}` : result.output);
+        } catch (err) {
+          push("error", `export failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        return;
+      }
+      case "init": {
+        const done = app.initMemory();
+        push(
+          "info",
+          `wrote ${done.path}${done.imported === undefined ? "" : ` (imported ${done.imported})`}`,
+        );
+        return;
+      }
+      case "memory":
+        if (arg === "edit") {
+          push("info", "memory editing needs an editor — use sys repl /memory edit.");
+          return;
+        }
+        for (const file of app.memoryFiles) {
+          push("info", `${file.path}: ${file.content.length} chars`);
+        }
+        return;
+      case "permissions": {
+        if (arg === "") {
+          const listing =
+            app.rules.length === 0
+              ? "(no custom rules)"
+              : app.rules.map((r) => `- ${r.decision} ${r.tool}(${r.pattern})`).join("\n");
+          push("info", `mode: ${permission.current}\n${listing}`);
+          return;
+        }
+        const [decision, ...ruleParts] = arg.split(/\s+/);
+        if (decision !== "allow" && decision !== "deny" && decision !== "ask") {
+          push("info", "usage: /permissions [allow|deny|ask Tool(pattern)]");
+          return;
+        }
+        try {
+          const rule = parseRule(ruleParts.join(" "), decision);
+          app.savePermissionRule(rule);
+          push("info", `saved ${decision} ${rule.tool}(${rule.pattern}).`);
+        } catch (err) {
+          push("error", `error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        return;
+      }
+      case "reload": {
+        const counts = app.reloadExtensions();
+        push(
+          "info",
+          `reloaded: ${counts.skills} skills, ${counts.subagents} subagents, ${counts.commands} commands.`,
+        );
+        return;
+      }
+      case "review": {
+        push("info", "reviewing working tree…");
+        const diff = await app.tools.bash("git diff --stat && git diff | head -c 6000");
+        if (!diff.ok) {
+          push("error", `review needs a git repo: ${diff.output.slice(0, 200)}`);
+          return;
+        }
+        try {
+          const verdict = await driver.sendMessage([
+            { role: "system", content: "Review this diff for bugs and quality. Be concise." },
+            { role: "user", content: diff.output },
+          ]);
+          push("assistant", verdict.text);
+          historyRef.current.push(
+            { role: "user", content: diff.output },
+            { role: "assistant", content: verdict.text },
+          );
+          app.sessions.append(sessionId, { type: "assistant", text: verdict.text });
+        } catch (err) {
+          push("error", `error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        return;
+      }
       default: {
-        const skill = app.skills.find((s) => s.name === cmd);
+        const skill =
+          app.skills.find((s) => s.name === cmd) ??
+          app.skills.find((s) => s.name.toLowerCase() === cmd);
         if (skill !== undefined) {
           if (!skill.userInvocable) {
             push("info", `skill "${skill.name}" is not directly runnable`);
@@ -593,12 +757,18 @@ export function Session({
           await runTask(buildSkillTask(skill.name, body, arg));
           return;
         }
-        const custom = app.customCommands.find((c) => c.name === cmd);
+        const custom =
+          app.customCommands.find((c) => c.name === cmd) ??
+          app.customCommands.find((c) => c.name.toLowerCase() === cmd);
         if (custom !== undefined) {
           await runTask(substituteArgs(custom.template, arg));
           return;
         }
-        push("error", `unknown command /${cmd ?? ""} — try /help`);
+        if (rawName === "") {
+          push("info", "type /help for commands, or just write a message.");
+          return;
+        }
+        push("error", `unknown command /${rawName} — try /help`);
       }
     }
   };
@@ -727,7 +897,7 @@ export function Session({
             ? {pending.question}
           </Text>
           {pending.options.map((o, i) => (
-            <Text key={o}>
+            <Text key={`${i}-${o}`}>
               {" "}
               {i + 1}. {o}
             </Text>

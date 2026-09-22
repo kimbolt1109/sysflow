@@ -22,6 +22,10 @@ export interface TuiAppProps {
   createDriver: (id: string) => Driver;
   /** past council lessons from the composition root ("" when none) */
   lessons?: string;
+  /** CLI-provided starting models (unknown ids are dropped) */
+  initialModels?: string[];
+  /** CLI-provided mode (skips the mode picker when models are set) */
+  initialMode?: OrchestrationMode;
 }
 
 type Screen =
@@ -38,6 +42,18 @@ function sameSet(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((id) => b.includes(id));
 }
 
+function initialScreen(
+  models: ModelInfo[],
+  initialModels: string[] | undefined,
+  initialMode: OrchestrationMode | undefined,
+): Screen {
+  const known = new Set(models.map((m) => m.id));
+  const picked = (initialModels ?? []).filter((id) => known.has(id));
+  if (picked.length === 0) return { name: "picker" };
+  if (initialMode !== undefined) return { name: "thinking", models: picked, mode: initialMode };
+  return { name: "mode", models: picked };
+}
+
 export function App({
   app,
   models,
@@ -47,9 +63,13 @@ export function App({
   createAgents,
   createDriver,
   lessons = "",
+  initialModels,
+  initialMode,
 }: TuiAppProps): ReactElement {
   const { exit } = useApp();
-  const [screen, setScreen] = useState<Screen>({ name: "picker" });
+  const [screen, setScreen] = useState<Screen>(() =>
+    initialScreen(models, initialModels, initialMode),
+  );
   const last = useMemo(() => {
     try {
       return loadLastSelection(app, new Set(models.map((m) => m.id)));

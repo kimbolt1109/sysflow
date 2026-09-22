@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseMcpConfig, type McpPort, type McpServerDef, type McpToolInfo } from "@/domain/mcp.js";
+import { fetchWithTimeout, MCP_HTTP_TIMEOUT_MS } from "@/lib/fetch.js";
 
 interface JsonRpcResponse {
   id: number;
@@ -11,11 +12,16 @@ interface JsonRpcResponse {
 
 function httpCall(def: McpServerDef, method: string, params: unknown): Promise<JsonRpcResponse> {
   const url = def.url ?? "";
-  return fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  }).then(async (res) => {
+  return fetchWithTimeout(
+    fetch,
+    url,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    },
+    MCP_HTTP_TIMEOUT_MS,
+  ).then(async (res) => {
     if (!res.ok) throw new Error(`mcp ${def.name} http ${res.status}`);
     return (await res.json()) as JsonRpcResponse;
   });
@@ -34,24 +40,49 @@ function stdioCall(
     const results: JsonRpcResponse[] = [];
     let buffer = "";
     let nextId = 1;
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
     const queue = [
       {
         method: "initialize",
         params: {
           protocolVersion: "2024-11-05",
           capabilities: {},
-          clientInfo: { name: "flow", version: "0.1.0" },
+          clientInfo: { name: "sys", version: "0.1.0" },
         },
       },
       ...calls,
     ].map((call) => ({ ...call, id: nextId++ }));
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error(`mcp ${def.name} timed out`));
+      settle(() => reject(new Error(`mcp ${def.name} timed out`)));
     }, 15000);
     child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
+      settle(() => reject(err));
+    });
+    child.on("close", () => {
+      const trimmed = buffer.trim();
+      if (trimmed !== "") {
+        try {
+          results.push(JSON.parse(trimmed) as JsonRpcResponse);
+        } catch {
+          // fall through to the incomplete-results error below
+        }
+      }
+      if (results.length >= queue.length) {
+        settle(() => resolvePromise(results));
+      } else {
+        settle(() =>
+          reject(
+            new Error(`mcp ${def.name} exited with ${results.length}/${queue.length} replies`),
+          ),
+        );
+      }
     });
     child.stdout.on("data", (chunk: Buffer) => {
       buffer += chunk.toString("utf8");
@@ -66,9 +97,8 @@ function stdioCall(
           continue;
         }
         if (results.length >= queue.length) {
-          clearTimeout(timer);
           child.kill();
-          resolvePromise(results);
+          settle(() => resolvePromise(results));
         }
       }
     });
@@ -194,6 +224,14 @@ function readMcpFile(path: string): unknown {
 
 export function mcpUserPath(dataDir: string): string {
   return join(dataDir, "mcp.json");
+}
+
+export function loadUserMcpDefs(dataDir: string): McpServerDef[] {
+  return parseMcpConfig(readMcpFile(mcpUserPath(dataDir)));
+}
+
+export function loadProjectMcpDefs(projectDir: string): McpServerDef[] {
+  return parseMcpConfig(readMcpFile(join(projectDir, ".flow", "mcp.json")));
 }
 
 export function loadMcpConfig(dataDir: string, projectDir: string): McpServerDef[] {

@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { HookRunner, loadHooks } from "@/infrastructure/hookRunner.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  HookRunner,
+  loadHooks,
+  loadProjectHooks,
+  loadUserHooks,
+} from "@/infrastructure/hookRunner.js";
 
 const NODE = JSON.stringify(process.execPath);
 
@@ -43,6 +51,37 @@ describe("hookRunner", () => {
     await expect(runner.fire("SessionStart", {})).resolves.toEqual({
       decision: "block",
       reason: "r",
+    });
+  });
+
+  describe("user vs project hooks", () => {
+    let dir = "";
+    let proj = "";
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "flow-hooks-"));
+      proj = join(dir, "proj");
+      mkdirSync(join(proj, ".flow"), { recursive: true });
+      writeFileSync(
+        join(dir, "settings.json"),
+        JSON.stringify({ hooks: { Stop: "user-cmd" } }),
+        "utf8",
+      );
+      writeFileSync(
+        join(proj, ".flow", "settings.json"),
+        JSON.stringify({ hooks: { Stop: "project-cmd" } }),
+        "utf8",
+      );
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("splits user and project hooks for trust gating", () => {
+      expect(loadUserHooks(dir).map((h) => h.command)).toEqual(["user-cmd"]);
+      expect(loadProjectHooks(proj).map((h) => h.command)).toEqual(["project-cmd"]);
+      expect(loadHooks(dir, proj)).toHaveLength(2);
     });
   });
 });

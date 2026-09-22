@@ -56,7 +56,7 @@ export function parseArgv(argv: string[]): CliArgs {
     notify: true,
     rest: [],
   };
-  let positional: string[] | undefined;
+  let sawBare = false;
   let i = 0;
   const next = (): string | undefined => {
     i += 1;
@@ -128,34 +128,26 @@ export function parseArgv(argv: string[]): CliArgs {
       args.command = "help";
     } else if (tok === "--version" || tok === "-v") {
       args.command = "version";
-    } else if (!tok.startsWith("-") && positional === undefined) {
-      positional = [tok, ...argv.slice(i + 1)];
-      break;
+    } else if (!tok.startsWith("-") && !sawBare) {
+      sawBare = true;
+      if (
+        tok === "models" ||
+        tok === "doctor" ||
+        tok === "sessions" ||
+        tok === "update" ||
+        tok === "tui" ||
+        tok === "repl" ||
+        tok === "mcp" ||
+        tok === "config"
+      ) {
+        args.command = tok;
+      } else {
+        args.rest.push(tok);
+      }
     } else {
       args.rest.push(tok);
     }
     i += 1;
-  }
-  if (positional !== undefined && positional.length > 0) {
-    const [head, ...tail] = positional as [string, ...string[]];
-    if (
-      head === "models" ||
-      head === "doctor" ||
-      head === "sessions" ||
-      head === "update" ||
-      head === "tui" ||
-      head === "repl"
-    ) {
-      args.command = head;
-      args.rest.push(...tail);
-    } else if (head === "mcp" || head === "config") {
-      args.command = head;
-      args.rest.push(...tail);
-    } else if (args.prompt === undefined && args.command !== "headless") {
-      args.rest.push(head, ...tail);
-    } else {
-      args.rest.push(head, ...tail);
-    }
   }
   if (args.command === "tui" && args.prompt !== undefined) args.command = "headless";
   return args;

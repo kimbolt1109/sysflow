@@ -2,6 +2,7 @@ import type { ChatMessage, QuotaInfo, TokenUsage } from "@/domain/models.js";
 import type { Driver, SendResult } from "@/domain/drivers.js";
 import { loadImageParts } from "@/infrastructure/imageFiles.js";
 import { AuthError, DriverError, QuotaError } from "@/lib/errors.js";
+import { CHAT_SEND_TIMEOUT_MS, CHAT_STREAM_TIMEOUT_MS, fetchWithTimeout } from "@/lib/fetch.js";
 
 export interface GoogleOptions {
   apiKey: string;
@@ -100,13 +101,15 @@ export class GoogleDriver implements Driver {
   async sendMessage(messages: ChatMessage[]): Promise<SendResult> {
     let res: Response;
     try {
-      res = await this.fetchFn(
+      res = await fetchWithTimeout(
+        this.fetchFn,
         `${this.baseUrl}/models/${this.apiModel}:generateContent?key=${this.apiKey}`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ ...this.systemOf(messages), contents: this.toContents(messages) }),
         },
+        CHAT_SEND_TIMEOUT_MS,
       );
     } catch (err) {
       throw new DriverError(
@@ -120,6 +123,7 @@ export class GoogleDriver implements Driver {
     };
     const parts = data.candidates?.[0]?.content?.parts ?? [];
     const text = parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("");
+    if (text === "") throw new DriverError("google returned an empty reply");
     const usage: TokenUsage = {
       input: num(data.usageMetadata?.promptTokenCount),
       output: num(data.usageMetadata?.candidatesTokenCount),
@@ -135,13 +139,15 @@ export class GoogleDriver implements Driver {
   ): Promise<SendResult> {
     let res: Response;
     try {
-      res = await this.fetchFn(
+      res = await fetchWithTimeout(
+        this.fetchFn,
         `${this.baseUrl}/models/${this.apiModel}:streamGenerateContent?alt=sse&key=${this.apiKey}`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ ...this.systemOf(messages), contents: this.toContents(messages) }),
         },
+        CHAT_STREAM_TIMEOUT_MS,
       );
     } catch (err) {
       throw new DriverError(
@@ -156,32 +162,39 @@ export class GoogleDriver implements Driver {
     const decoder = new TextDecoder();
     let buffer = "";
     let text = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        let event: unknown;
-        try {
-          event = JSON.parse(trimmed.slice(5).trim());
-        } catch {
-          continue;
-        }
-        const cands = (
-          event as { candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }> }
-        ).candidates;
-        for (const part of cands?.[0]?.content?.parts ?? []) {
-          if (typeof part.text === "string" && part.text !== "") {
-            text += part.text;
-            onToken(part.text);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          let event: unknown;
+          try {
+            event = JSON.parse(trimmed.slice(5).trim());
+          } catch {
+            continue;
+          }
+          const cands = (
+            event as { candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }> }
+          ).candidates;
+          for (const part of cands?.[0]?.content?.parts ?? []) {
+            if (typeof part.text === "string" && part.text !== "") {
+              text += part.text;
+              onToken(part.text);
+            }
           }
         }
       }
+    } catch (err) {
+      throw new DriverError(
+        `google network error: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
+    if (text === "") throw new DriverError("google returned an empty reply");
     const usage: TokenUsage = { input: 0, output: this.countTokens(text) };
     this.requests += 1;
     this.tokens += usage.output;

@@ -23,9 +23,21 @@ import { sessionPreview } from "@/domain/sessions.js";
 import type { ThinkingLevel } from "@/domain/thinking.js";
 import type { ToolCheck } from "@/infrastructure/agentLoop.js";
 import { findOnPath, passthrough } from "@/infrastructure/cliDrivers.js";
-import { removeMcpServer, saveMcpServer } from "@/infrastructure/mcpClients.js";
+import { HookRunner, loadProjectHooks, loadUserHooks } from "@/infrastructure/hookRunner.js";
+import {
+  loadProjectMcpDefs,
+  loadUserMcpDefs,
+  McpPool,
+  removeMcpServer,
+  saveMcpServer,
+} from "@/infrastructure/mcpClients.js";
 import { loadPermissionRules } from "@/infrastructure/permissionStore.js";
-import { userSettingsPath, writeUserDefaultModel } from "@/infrastructure/userSettings.js";
+import {
+  readTrustedProjects,
+  trustProject,
+  userSettingsPath,
+  writeUserDefaultModel,
+} from "@/infrastructure/userSettings.js";
 import { AppError } from "@/lib/errors.js";
 
 const VERSION = "0.1.0";
@@ -89,10 +101,17 @@ async function main(): Promise<number> {
   if (args.outputFormat !== "text") {
     config.logLevel = "error";
   }
+  if (args.verbose) {
+    config.logLevel = "debug";
+  }
   if (args.model !== undefined) {
     config.defaultModel = args.model;
   }
   const app = createApp(config);
+
+  if (args.command === "tui" || args.command === "repl" || args.command === "headless") {
+    await enforceProjectTrust(app);
+  }
 
   switch (args.command) {
     case "models": {
@@ -126,6 +145,9 @@ async function main(): Promise<number> {
         );
         return 2;
       }
+      if (args.passthrough) {
+        process.stderr.write("note: --passthrough needs sys repl with a single model; ignoring.\n");
+      }
       const permission: { current: PermissionMode } = {
         current: args.permissionMode ?? "default",
       };
@@ -134,6 +156,11 @@ async function main(): Promise<number> {
         yolo: args.dangerouslySkip,
         permission,
         lessons: recallLessons(app.sessions, 5),
+        initialModels:
+          args.model !== undefined || args.agents.length > 0
+            ? [...new Set([args.model, ...args.agents].filter((m): m is string => m !== undefined))]
+            : undefined,
+        initialMode: args.mode,
         createAgents: (ids, level) =>
           createDriverAgents(
             app,
@@ -145,6 +172,9 @@ async function main(): Promise<number> {
       });
     }
     case "headless": {
+      if (args.passthrough) {
+        process.stderr.write("note: --passthrough needs sys repl with a single model; ignoring.\n");
+      }
       try {
         const council = buildCouncil(app, args, [], "council");
         if (council !== undefined) {
@@ -212,6 +242,8 @@ async function main(): Promise<number> {
       if (council === undefined) {
         const exit = await maybePassthrough(config.defaultModel, app, args.passthrough);
         if (exit !== undefined) return exit;
+      } else if (args.passthrough) {
+        process.stderr.write("note: --passthrough needs sys repl with a single model; ignoring.\n");
       }
       const detected = selectTheme({
         themeName: config.uiTheme,
@@ -322,6 +354,38 @@ async function askYesNo(question: string): Promise<boolean> {
   } finally {
     rl.close();
   }
+}
+
+/** Project hooks and MCP servers execute local code: run them only for
+ * trusted projects. Interactive sessions ask once and remember; anything
+ * else falls back to user-level hooks/MCP with a notice. */
+async function enforceProjectTrust(app: FlowApp): Promise<void> {
+  const hooks = loadProjectHooks(app.config.projectDir);
+  const servers = loadProjectMcpDefs(app.config.projectDir);
+  if (hooks.length === 0 && servers.length === 0) return;
+  if (readTrustedProjects(app.config.dataDir).includes(app.config.projectDir)) return;
+  const kinds = [
+    hooks.length > 0 ? `${hooks.length} hook(s)` : "",
+    servers.length > 0 ? `MCP server(s) ${servers.map((s) => s.name).join(", ")}` : "",
+  ]
+    .filter((k) => k !== "")
+    .join(" + ");
+  if (process.stdin.isTTY !== true) {
+    process.stderr.write(
+      `untrusted project ${app.config.projectDir}: ignoring ${kinds} (trust once interactively)\n`,
+    );
+    app.hooks = new HookRunner(loadUserHooks(app.config.dataDir));
+    app.mcp = new McpPool(loadUserMcpDefs(app.config.dataDir));
+    return;
+  }
+  const trusted = await askYesNo(`run project ${kinds} from ${app.config.projectDir}? [y/N] `);
+  if (trusted) {
+    trustProject(app.config.dataDir, app.config.projectDir);
+    return;
+  }
+  process.stdout.write("running with user hooks/MCP only.\n");
+  app.hooks = new HookRunner(loadUserHooks(app.config.dataDir));
+  app.mcp = new McpPool(loadUserMcpDefs(app.config.dataDir));
 }
 
 async function maybePassthrough(

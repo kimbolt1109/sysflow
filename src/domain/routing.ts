@@ -5,6 +5,8 @@ function globToRegExp(glob: string): RegExp {
   for (const ch of glob) {
     if (ch === "*") {
       out += ".*";
+    } else if (ch === "?") {
+      out += ".";
     } else if ("\\^$+?.()|{}[]".includes(ch)) {
       out += `\\${ch}`;
     } else {
