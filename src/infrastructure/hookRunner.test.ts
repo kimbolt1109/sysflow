@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HookRunner, loadHooks } from "@/infrastructure/hookRunner";
+import { HookRunner, loadHooks } from "@/infrastructure/hookRunner.js";
 
 const NODE = JSON.stringify(process.execPath);
 

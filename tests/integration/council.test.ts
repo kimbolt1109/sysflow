@@ -2,15 +2,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CouncilSession } from "@/api/council";
-import { createApp } from "@/app";
-import { loadConfig } from "@/config";
+import { CouncilSession } from "@/api/council.js";
+import { createApp } from "@/app.js";
+import { loadConfig } from "@/config.js";
 import {
   runCouncil,
   type ExecuteOutcome,
   type Orchestrant,
   type Review,
-} from "@/domain/orchestrator";
+} from "@/domain/orchestrator.js";
 
 class ScriptAgent implements Orchestrant {
   constructor(

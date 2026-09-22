@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { mergeModels } from "@/domain/discovery";
-import type { ModelInfo } from "@/domain/models";
+import { mergeModels } from "@/domain/discovery.js";
+import type { ModelInfo } from "@/domain/models.js";
 
 const REGISTRY: ModelInfo[] = [
   {

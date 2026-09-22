@@ -2,13 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { parseArgv } from "@/api/cli";
-import { formatHeadless, runHeadless } from "@/api/headless";
-import { createApp } from "@/app";
-import { loadConfig } from "@/config";
-import type { Driver } from "@/domain/drivers";
-import { matchRouting } from "@/domain/routing";
-import { MockDriver } from "@/infrastructure/mockDriver";
+import { parseArgv } from "@/api/cli.js";
+import { formatHeadless, runHeadless } from "@/api/headless.js";
+import { createApp } from "@/app.js";
+import { loadConfig } from "@/config.js";
+import type { Driver } from "@/domain/drivers.js";
+import { matchRouting } from "@/domain/routing.js";
+import { MockDriver } from "@/infrastructure/mockDriver.js";
 
 describe("cli integration", () => {
   let dir = "";

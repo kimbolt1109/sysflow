@@ -1,4 +1,4 @@
-import { fieldAsList, fieldAsString, parseFrontmatter } from "@/domain/frontmatter";
+import { fieldAsList, fieldAsString, parseFrontmatter } from "@/domain/frontmatter.js";
 
 export interface SubagentDef {
   name: string;

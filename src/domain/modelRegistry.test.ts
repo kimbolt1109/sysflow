@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { findModel, listModels, modelsByProvider, requireModel } from "@/domain/modelRegistry";
-import type { ModelInfo } from "@/domain/models";
+import { findModel, listModels, modelsByProvider, requireModel } from "@/domain/modelRegistry.js";
+import type { ModelInfo } from "@/domain/models.js";
 
 const MODELS: ModelInfo[] = [
   {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { probeKeychain } from "@/infrastructure/keychain";
+import { probeKeychain } from "@/infrastructure/keychain.js";
 
 describe("keychain", () => {
   it("probes without throwing", () => {

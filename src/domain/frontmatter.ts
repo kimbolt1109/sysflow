@@ -55,3 +55,15 @@ export function fieldAsList(fields: Record<string, string | string[]>, key: stri
   if (Array.isArray(value)) return value;
   return [];
 }
+
+export function fieldAsBoolean(
+  fields: Record<string, string | string[]>,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const value = fields[key];
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (text === "true" || text === "yes" || text === "1") return true;
+  if (text === "false" || text === "no" || text === "0") return false;
+  return fallback;
+}

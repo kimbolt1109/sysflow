@@ -3,11 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CouncilSession } from "@/api/council";
-import { createApp } from "@/app";
-import { loadConfig } from "@/config";
-import { DriverAgent } from "@/infrastructure/driverAgent";
-import { MockDriver } from "@/infrastructure/mockDriver";
+import { CouncilSession } from "@/api/council.js";
+import { createApp } from "@/app.js";
+import { loadConfig } from "@/config.js";
+import { DriverAgent } from "@/infrastructure/driverAgent.js";
+import { MockDriver } from "@/infrastructure/mockDriver.js";
 
 // Full-stack harness: a scripted driver behind the real DriverAgent + tool
 // loop, running inside a temp git repo. Proves headless council tasks change

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { AnthropicDriver } from "@/infrastructure/nativeAnthropic";
-import { AuthError, QuotaError } from "@/lib/errors";
-import type { ChatMessage } from "@/domain/models";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AnthropicDriver } from "@/infrastructure/nativeAnthropic.js";
+import { AuthError, QuotaError } from "@/lib/errors.js";
+import type { ChatMessage } from "@/domain/models.js";
 
 const MESSAGES: ChatMessage[] = [{ role: "user", content: "hi" }];
 
@@ -35,6 +38,29 @@ describe("AnthropicDriver", () => {
     const driver = new AnthropicDriver({ apiKey: "k", model: "anthropic/x", fetchFn });
 
     await expect(driver.sendMessage(MESSAGES)).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it("sends screenshots as base64 image blocks", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flow-shot-"));
+    try {
+      const path = join(dir, "shot.png");
+      writeFileSync(path, Buffer.from("fakepng"));
+      const fetchFn = vi.fn(async () =>
+        jsonResponse({ content: [{ type: "text", text: "seen" }] }),
+      );
+      const driver = new AnthropicDriver({ apiKey: "k", model: "anthropic/x", fetchFn });
+
+      await driver.sendMessage([
+        { role: "tool", name: "screenshot", content: "saved", images: [path] },
+      ]);
+
+      const call = fetchFn.mock.calls[0] as [string, RequestInit] | undefined;
+      const body = String((call as [string, RequestInit])[1].body);
+      expect(body).toContain('"type":"image"');
+      expect(body).toContain(Buffer.from("fakepng").toString("base64"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("throws QuotaError with retry delay on 429", async () => {

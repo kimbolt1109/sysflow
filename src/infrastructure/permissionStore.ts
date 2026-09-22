@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseRule, type PermissionRule } from "@/domain/permissions";
+import { parseRule, type PermissionRule } from "@/domain/permissions.js";
 
 interface PermissionFile {
   permissions?: { allow?: unknown; deny?: unknown; ask?: unknown };

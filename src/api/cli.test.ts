@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { helpText, parseArgv } from "@/api/cli";
+import { helpText, parseArgv } from "@/api/cli.js";
 
 describe("cli", () => {
   it("defaults to the repl", () => {
@@ -24,6 +24,7 @@ describe("cli", () => {
   it("parses subcommands and flags", () => {
     expect(parseArgv(["models"]).command).toBe("models");
     expect(parseArgv(["doctor"]).command).toBe("doctor");
+    expect(parseArgv(["tui"]).command).toBe("tui");
     expect(parseArgv(["-y"]).dangerouslySkip).toBe(true);
     expect(parseArgv(["--passthrough"]).passthrough).toBe(true);
     expect(parseArgv([]).passthrough).toBe(false);

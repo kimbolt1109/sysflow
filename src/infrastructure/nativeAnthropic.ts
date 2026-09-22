@@ -1,6 +1,7 @@
-import type { ChatMessage, QuotaInfo, TokenUsage } from "@/domain/models";
-import type { Driver, SendResult } from "@/domain/drivers";
-import { AuthError, DriverError, QuotaError } from "@/lib/errors";
+import type { ChatMessage, QuotaInfo, TokenUsage } from "@/domain/models.js";
+import type { Driver, SendResult } from "@/domain/drivers.js";
+import { loadImageParts } from "@/infrastructure/imageFiles.js";
+import { AuthError, DriverError, QuotaError } from "@/lib/errors.js";
 
 export interface AnthropicOptions {
   apiKey: string;
@@ -22,6 +23,19 @@ function toApiModel(id: string): string {
 
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function messageContent(m: ChatMessage): unknown {
+  const text = m.role === "tool" ? `[tool ${m.name ?? ""}] ${m.content}` : m.content;
+  const images = loadImageParts(m.images);
+  if (images.length === 0) return text;
+  return [
+    { type: "text", text },
+    ...images.map((img) => ({
+      type: "image",
+      source: { type: "base64", media_type: img.mime, data: img.base64 },
+    })),
+  ];
 }
 
 function textOf(content: unknown): string {
@@ -90,7 +104,7 @@ export class AnthropicDriver implements Driver {
       .filter((m) => m.role !== "system")
       .map((m) => ({
         role: m.role === "assistant" ? "assistant" : "user",
-        content: m.role === "tool" ? `[tool ${m.name ?? ""}] ${m.content}` : m.content,
+        content: messageContent(m),
       }));
     const payload: Record<string, unknown> = {
       model: this.apiModel,

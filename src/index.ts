@@ -1,32 +1,44 @@
 #!/usr/bin/env node
-import { createApp, createDriverAgents, type FlowApp } from "@/app";
-import { helpText, parseArgv, type CliArgs } from "@/api/cli";
-import { describeConfig } from "@/api/configView";
-import { CouncilSession } from "@/api/council";
-import { runDoctor } from "@/api/doctor";
-import { formatHeadless, runHeadless } from "@/api/headless";
-import { startRepl } from "@/api/repl";
-import { runSelector } from "@/api/selector";
-import { selectTheme } from "@/api/theming";
-import { loadConfig } from "@/config";
-import { checkPermission } from "@/domain/permissions";
-import { matchRouting } from "@/domain/routing";
-import { sessionPreview } from "@/domain/sessions";
-import type { ToolCheck } from "@/infrastructure/agentLoop";
-import { findOnPath, passthrough } from "@/infrastructure/cliDrivers";
-import { removeMcpServer, saveMcpServer } from "@/infrastructure/mcpClients";
-import { loadPermissionRules } from "@/infrastructure/permissionStore";
-import { userSettingsPath, writeUserDefaultModel } from "@/infrastructure/userSettings";
-import { AppError } from "@/lib/errors";
+import {
+  createApp,
+  createDriverAgents,
+  createDriverFor,
+  recallLessons,
+  type FlowApp,
+} from "@/app.js";
+import { helpText, parseArgv, type CliArgs } from "@/api/cli.js";
+import { describeConfig } from "@/api/configView.js";
+import { CouncilSession } from "@/api/council.js";
+import { runDoctor } from "@/api/doctor.js";
+import { formatHeadless, runHeadless } from "@/api/headless.js";
+import { startRepl } from "@/api/repl.js";
+import { loadLastSelection, runSelector } from "@/api/selector.js";
+import { selectTheme } from "@/api/theming.js";
+import { startTui } from "@/api/tui.js";
+import { loadConfig } from "@/config.js";
+import { checkPermission } from "@/domain/permissions.js";
+import type { PermissionMode } from "@/domain/permissions.js";
+import { matchRouting } from "@/domain/routing.js";
+import { sessionPreview } from "@/domain/sessions.js";
+import type { ThinkingLevel } from "@/domain/thinking.js";
+import type { ToolCheck } from "@/infrastructure/agentLoop.js";
+import { findOnPath, passthrough } from "@/infrastructure/cliDrivers.js";
+import { removeMcpServer, saveMcpServer } from "@/infrastructure/mcpClients.js";
+import { loadPermissionRules } from "@/infrastructure/permissionStore.js";
+import { userSettingsPath, writeUserDefaultModel } from "@/infrastructure/userSettings.js";
+import { AppError } from "@/lib/errors.js";
 
 const VERSION = "0.1.0";
 
-function toolCheckFor(app: FlowApp, dangerouslySkip: boolean): ToolCheck {
+function toolCheckFor(
+  app: FlowApp,
+  dangerouslySkip: boolean,
+  getMode: () => PermissionMode = () => "default",
+): ToolCheck {
   if (dangerouslySkip) return () => "allow";
   const rules = loadPermissionRules(app.config.dataDir, app.config.projectDir);
   return (tool: string, input: Record<string, unknown>) => {
-    const decision = checkPermission("default", rules, tool, input);
-    return decision === "deny" ? "deny" : "allow";
+    return checkPermission(getMode(), rules, tool, input);
   };
 }
 
@@ -36,6 +48,7 @@ function buildCouncil(
   modelIds: string[],
   mode: CouncilSession["mode"],
   lead?: string,
+  thinking: ThinkingLevel = "medium",
 ): CouncilSession | undefined {
   const ids = args.agents.length > 0 ? args.agents : modelIds;
   if (ids.length === 0) {
@@ -46,7 +59,7 @@ function buildCouncil(
     }
   }
   const session = new CouncilSession(
-    createDriverAgents(app, ids, toolCheckFor(app, args.dangerouslySkip)),
+    createDriverAgents(app, ids, toolCheckFor(app, args.dangerouslySkip), thinking),
   );
   const wantMode = args.mode ?? mode;
   if (wantMode !== undefined) session.mode = wantMode;
@@ -106,6 +119,29 @@ async function main(): Promise<number> {
     case "update":
       process.stdout.write("flow updates via npm (M8 publishes flow-ai-cli)\n");
       return 0;
+    case "tui": {
+      if (!process.stdin.isTTY) {
+        process.stderr.write("tui needs an interactive terminal\n");
+        return 2;
+      }
+      const permission: { current: PermissionMode } = {
+        current: args.permissionMode ?? "default",
+      };
+      return startTui(app, {
+        notify: args.notify,
+        yolo: args.dangerouslySkip,
+        permission,
+        lessons: recallLessons(app.sessions, 5),
+        createAgents: (ids, level) =>
+          createDriverAgents(
+            app,
+            ids,
+            toolCheckFor(app, args.dangerouslySkip, () => permission.current),
+            level,
+          ),
+        createDriver: (id) => createDriverFor(app.config, id, undefined, app.models),
+      });
+    }
     case "headless": {
       try {
         const council = buildCouncil(app, args, [], "council");
@@ -123,7 +159,11 @@ async function main(): Promise<number> {
           args,
           (line) => process.stdout.write(`${line}\n`),
           council,
-          { notify: args.notify },
+          {
+            notify: args.notify,
+            lessons: recallLessons(app.sessions, 5),
+            check: toolCheckFor(app, args.dangerouslySkip),
+          },
         );
         process.stdout.write(`${formatHeadless(result, args)}\n`);
         return 0;
@@ -149,20 +189,23 @@ async function main(): Promise<number> {
       let councilModels: string[] = [];
       let councilMode: CouncilSession["mode"] | undefined;
       let councilLead: string | undefined;
+      let thinking: ThinkingLevel = "medium";
       if (needsPicker) {
         const selection = await runSelector(app);
         config.defaultModel = selection.models[0] ?? config.defaultModel;
         councilModels = selection.models;
         councilMode = selection.mode;
         councilLead = selection.lead;
+        thinking = selection.thinking;
       } else if (args.agents.length > 0) {
         config.defaultModel = args.agents[0] ?? config.defaultModel;
         councilModels = args.agents;
         if (args.mode !== undefined) councilMode = args.mode;
+        thinking = loadLastSelection(app)?.thinking ?? "medium";
       }
       const council =
         councilModels.length > 1
-          ? buildCouncil(app, args, councilModels, councilMode ?? "council", councilLead)
+          ? buildCouncil(app, args, councilModels, councilMode ?? "council", councilLead, thinking)
           : undefined;
       if (council === undefined) {
         const exit = await maybePassthrough(config.defaultModel, app, args.passthrough);
@@ -181,10 +224,12 @@ async function main(): Promise<number> {
         agents: council === undefined ? undefined : council.agents,
         councilMode: council?.mode,
         councilLead: council?.lead,
+        thinking,
         editor: config.editor,
         theme: detected.theme,
         color: detected.color,
         notify: args.notify,
+        lessons: recallLessons(app.sessions, 5),
       });
     }
   }

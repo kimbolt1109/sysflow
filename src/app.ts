@@ -3,73 +3,78 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import type { Config } from "@/config";
-import type { CustomCommand } from "@/domain/commands";
-import type { DoctorCheck } from "@/domain/doctor";
-import type { Driver } from "@/domain/drivers";
-import type { HooksPort } from "@/domain/hooks";
-import type { McpPort } from "@/domain/mcp";
-import type { ModelInfo, QuotaInfo } from "@/domain/models";
-import { mergeModels } from "@/domain/discovery";
-import { buildMemoryBlock } from "@/domain/memory";
-import type { Checkpoint } from "@/domain/checkpoints";
-import { takeCheckpoint as takeCheckpointData } from "@/domain/checkpoints";
-import type { PermissionRule } from "@/domain/permissions";
-import { budgetLevel, costFor, type BudgetLevel } from "@/domain/quota";
-import { findModel } from "@/domain/modelRegistry";
-import { matchRouting } from "@/domain/routing";
-import type { SkillDef } from "@/domain/skills";
-import type { SubagentDef } from "@/domain/subagents";
-import type { ToolsPort } from "@/domain/toolDefs";
-import { runToolLoop, TOOL_SYSTEM, type ToolCheck } from "@/infrastructure/agentLoop";
+import type { Config } from "@/config.js";
+import type { CustomCommand } from "@/domain/commands.js";
+import type { DoctorCheck } from "@/domain/doctor.js";
+import type { Driver } from "@/domain/drivers.js";
+import type { HooksPort } from "@/domain/hooks.js";
+import type { McpPort } from "@/domain/mcp.js";
+import { formatMcpInventory } from "@/domain/mcp.js";
+import type { ModelInfo, QuotaInfo } from "@/domain/models.js";
+import { mergeModels } from "@/domain/discovery.js";
+import { buildMemoryBlock } from "@/domain/memory.js";
+import type { Checkpoint } from "@/domain/checkpoints.js";
+import { takeCheckpoint as takeCheckpointData } from "@/domain/checkpoints.js";
+import type { PermissionRule } from "@/domain/permissions.js";
+import { budgetLevel, costFor, type BudgetLevel } from "@/domain/quota.js";
+import { findModel } from "@/domain/modelRegistry.js";
+import { matchRouting } from "@/domain/routing.js";
+import type { SkillDef } from "@/domain/skills.js";
+import { thinkingDirective, type ThinkingLevel } from "@/domain/thinking.js";
+import { extractLessons, lessonsContext } from "@/domain/learnings.js";
+import type { SubagentDef } from "@/domain/subagents.js";
+import type { ToolsPort } from "@/domain/toolDefs.js";
+import { runToolLoop, TOOL_SYSTEM, type ToolCheck } from "@/infrastructure/agentLoop.js";
 import {
   checkpointDir,
   listCheckpoints,
   restoreCheckpoint,
   saveCheckpoint,
-  snapshotWorkspace,
-} from "@/infrastructure/checkpointStore";
-import { CliDriver, cliVersion, findOnPath } from "@/infrastructure/cliDrivers";
-import { discoverCommands } from "@/infrastructure/commandStore";
+  snapshotWorkspace as takeWorkspaceSnapshot,
+} from "@/infrastructure/checkpointStore.js";
+import { CliDriver, cliVersion, findOnPath } from "@/infrastructure/cliDrivers.js";
+import { discoverCommands } from "@/infrastructure/commandStore.js";
 import {
   cacheIsFresh,
   discoverAll,
   loadDiscoveryCache,
   runCli,
   saveDiscoveryCache,
-} from "@/infrastructure/discovery";
-import { DriverAgent } from "@/infrastructure/driverAgent";
-import { HookRunner, loadHooks } from "@/infrastructure/hookRunner";
-import { probeKeychain } from "@/infrastructure/keychain";
-import { LocalTools } from "@/infrastructure/localTools";
-import { loadMcpConfig, McpPool } from "@/infrastructure/mcpClients";
-import { notify } from "@/infrastructure/notifier";
+} from "@/infrastructure/discovery.js";
+import { DriverAgent } from "@/infrastructure/driverAgent.js";
+import { fetchPageText } from "@/lib/webfetch.js";
+import { openBrowser } from "@/lib/browser.js";
+import { HookRunner, loadHooks } from "@/infrastructure/hookRunner.js";
+import { probeKeychain } from "@/infrastructure/keychain.js";
+import { LocalTools } from "@/infrastructure/localTools.js";
+import { loadMcpConfig, McpPool } from "@/infrastructure/mcpClients.js";
+import { notify } from "@/infrastructure/notifier.js";
 import {
   findLegacyImport,
   importOfferedMarker,
   loadMemoryFiles,
   openInEditor,
   writeProjectMemory,
-} from "@/infrastructure/memoryStore";
-import { MockDriver } from "@/infrastructure/mockDriver";
-import { AnthropicDriver } from "@/infrastructure/nativeAnthropic";
-import { GoogleDriver } from "@/infrastructure/nativeGoogle";
+} from "@/infrastructure/memoryStore.js";
+import { MockDriver } from "@/infrastructure/mockDriver.js";
+import { AnthropicDriver } from "@/infrastructure/nativeAnthropic.js";
+import { GoogleDriver } from "@/infrastructure/nativeGoogle.js";
 import {
   createOllamaDriver,
   createOpenaiDriver,
   createOpenrouterDriver,
-} from "@/infrastructure/openaiCompat";
-import { SessionStore } from "@/infrastructure/sessionStore";
-import { discoverSkills, loadSkillBody } from "@/infrastructure/skillStore";
-import { discoverSubagents } from "@/infrastructure/subagentStore";
-import { loadPermissionRules, saveRule } from "@/infrastructure/permissionStore";
+} from "@/infrastructure/openaiCompat.js";
+import { SessionStore } from "@/infrastructure/sessionStore.js";
+import { discoverSkills, loadSkillBody } from "@/infrastructure/skillStore.js";
+import { discoverSubagents } from "@/infrastructure/subagentStore.js";
+import { loadPermissionRules, saveRule } from "@/infrastructure/permissionStore.js";
 import {
   dailyTotals,
   loadDailyUsage,
   recordProviderUsage,
   type DailyUsage,
-} from "@/infrastructure/usageStore";
-import { createLogger, type Logger } from "@/lib/logger";
+} from "@/infrastructure/usageStore.js";
+import { createLogger, type Logger } from "@/lib/logger.js";
 
 export interface MemoryFile {
   path: string;
@@ -107,7 +112,9 @@ export interface FlowApp {
   dailyUsage(): DailyUsage;
   quotaFor(modelId: string): Promise<QuotaInfo>;
   notifyUser(title: string, body: string): void;
+  askUser?: (question: string, options: string[]) => Promise<string>;
   takeCheckpoint(sessionId: string, label: string): Promise<Checkpoint>;
+  snapshotWorkspace(): Promise<Record<string, string | null>>;
   listCheckpoints(sessionId: string): Checkpoint[];
   restoreCheckpoint(sessionId: string, id: string): Promise<string[]>;
   diagnose(): Promise<DoctorCheck[]>;
@@ -199,23 +206,44 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined>
   });
 }
 
-export function contextPrefixFor(memory: string, skills: SkillDef[]): string {
+export function contextPrefixFor(
+  memory: string,
+  skills: SkillDef[],
+  thinking: ThinkingLevel = "medium",
+): string {
   const parts: string[] = [];
   if (memory.trim() !== "") parts.push(`Project memory:\n${memory}`);
-  if (skills.length > 0) {
+  const invokable = skills.filter((s) => !s.disableModelInvocation);
+  if (invokable.length > 0) {
     parts.push(
-      `Available skills (name: description; full body loads on demand via /skills show):\n${skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}`,
+      `Available skills (name: description; load a body first with the skill tool, then follow it):\n${invokable.map((s) => `- ${s.name}: ${s.description}`).join("\n")}`,
     );
   }
+  parts.push(thinkingDirective(thinking));
   return parts.join("\n\n");
+}
+
+/** Past council lessons for this project, as an agent context block ("" when none).
+ * Best-effort: session files are append-only logs and never block agent creation. */
+export function recallLessons(sessions: FlowApp["sessions"], cap = 8): string {
+  try {
+    const ids = sessions.list().slice(-10);
+    const records = ids.map((id) => sessions.load(id).slice(-100));
+    return lessonsContext(extractLessons(records, cap));
+  } catch {
+    return "";
+  }
 }
 
 export function createDriverAgents(
   app: FlowApp,
   modelIds: string[],
   check: ToolCheck,
+  thinking: ThinkingLevel = "medium",
 ): DriverAgent[] {
-  const prefix = contextPrefixFor(app.memory, app.skills);
+  const prefix = contextPrefixFor(app.memory, app.skills, thinking);
+  const lessons = recallLessons(app.sessions);
+  const fullPrefix = lessons === "" ? prefix : `${prefix}\n\n${lessons}`;
   const hooks = {
     before: (name: string, input: Record<string, unknown>) =>
       app.hooks.fire("PreToolUse", { tool_name: name, tool_input: input }),
@@ -232,8 +260,17 @@ export function createDriverAgents(
         app.tools,
         check,
         {
-          contextPrefix: prefix,
+          contextPrefix: fullPrefix,
           subagents: app.subagents,
+          skillBody: (name) => {
+            const def = app.skills.find((s) => s.name === name);
+            if (def?.disableModelInvocation === true) return undefined;
+            return app.skillBody(name);
+          },
+          onQuestion: async (question, options) =>
+            app.askUser !== undefined
+              ? app.askUser(question, options)
+              : "question unavailable (non-interactive session)",
           mcp: app.mcp,
           hooks,
         },
@@ -331,7 +368,21 @@ export function createApp(
       };
     },
     runSubagent: (name, prompt, emit) =>
-      runSubagentTask({ driver, tools, subagents, mcp }, name, prompt, emit),
+      runSubagentTask(
+        {
+          driver,
+          tools,
+          subagents,
+          mcp,
+          skills,
+          sessions,
+          dataDir: config.dataDir,
+          projectDir: config.projectDir,
+        },
+        name,
+        prompt,
+        emit,
+      ),
     dailyUsage: () => loadDailyUsage(config.dataDir),
     recordUsage: (provider, modelId, input, output) =>
       recordUsage(config, provider, modelId, input, output),
@@ -352,7 +403,7 @@ export function createApp(
       notify(title, body);
     },
     takeCheckpoint: async (sessionId, label) => {
-      const snap = await snapshotWorkspace(tools, label);
+      const snap = await takeWorkspaceSnapshot(tools, label);
       const entries = Object.entries(snap.files).map(([path, content]) => ({ path, content }));
       const checkpoint = takeCheckpointData(randomUUID(), snap.label, entries);
       const dir = checkpointDir(config.dataDir, config.projectDir, sessionId);
@@ -361,6 +412,7 @@ export function createApp(
     },
     listCheckpoints: (sessionId) =>
       listCheckpoints(checkpointDir(config.dataDir, config.projectDir, sessionId)),
+    snapshotWorkspace: async () => (await takeWorkspaceSnapshot(tools, "snapshot")).files,
     restoreCheckpoint: async (sessionId, id) => {
       const dir = checkpointDir(config.dataDir, config.projectDir, sessionId);
       const checkpoint = listCheckpoints(dir).find((c) => c.id === id || c.id.startsWith(id));
@@ -373,7 +425,16 @@ export function createApp(
 }
 
 async function runSubagentTask(
-  deps: { driver: Driver; tools: ToolsPort; subagents: SubagentDef[]; mcp: McpPort },
+  deps: {
+    driver: Driver;
+    tools: ToolsPort;
+    subagents: SubagentDef[];
+    mcp: McpPort;
+    skills: SkillDef[];
+    sessions: SessionStore;
+    dataDir: string;
+    projectDir: string;
+  },
   name: string,
   prompt: string,
   emit: (text: string) => void = () => {},
@@ -383,18 +444,25 @@ async function runSubagentTask(
     throw new Error(`unknown subagent "${name}" (see /agents)`);
   }
   const allowed = def.tools.map((t) => t.toLowerCase());
-  const result = await runToolLoop(
-    deps.driver,
-    deps.tools,
-    `${def.prompt === "" ? "You are a subagent. Complete the task." : def.prompt}\n\n${TOOL_SYSTEM}`,
-    prompt,
-    {
-      maxTurns: 8,
-      check: (tool) => (allowed.length > 0 && !allowed.includes(tool) ? "deny" : "allow"),
-      emit,
-      onMcpTool: (toolName, args) => deps.mcp.call(toolName, args),
+  const lessons = recallLessons(deps.sessions, 3);
+  const system =
+    `${def.prompt === "" ? "You are a subagent. Complete the task." : def.prompt}` +
+    (lessons === "" ? "" : `\n\n${lessons}`) +
+    `\n\n${TOOL_SYSTEM}`;
+  const result = await runToolLoop(deps.driver, deps.tools, system, prompt, {
+    maxTurns: 8,
+    check: (tool) => (allowed.length > 0 && !allowed.includes(tool) ? "deny" : "allow"),
+    emit,
+    onMcpTool: (toolName, args) => deps.mcp.call(toolName, args),
+    onListMcpTools: async () => formatMcpInventory(await deps.mcp.toolInventory()),
+    onSkill: (skillName) => {
+      const skill = deps.skills.find((s) => s.name === skillName);
+      if (skill?.disableModelInvocation === true) return undefined;
+      return loadSkillBody(deps.dataDir, deps.projectDir, skillName);
     },
-  );
+    onWebfetch: (url) => fetchPageText(url),
+    onBrowse: (url) => openBrowser(url),
+  });
   return result.answer;
 }
 

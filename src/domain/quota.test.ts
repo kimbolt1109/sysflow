@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { backoffDelay, budgetLevel, costFor, withFailover } from "@/domain/quota";
-import { QuotaError } from "@/lib/errors";
+import { backoffDelay, budgetLevel, costFor, withFailover } from "@/domain/quota.js";
+import { QuotaError } from "@/lib/errors.js";
 
 describe("quota", () => {
   it("prices token usage from the registry", () => {

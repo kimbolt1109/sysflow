@@ -1,4 +1,4 @@
-import type { RoutingRule } from "@/domain/models";
+import type { RoutingRule } from "@/domain/models.js";
 
 function globToRegExp(glob: string): RegExp {
   let out = "^";

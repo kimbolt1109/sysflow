@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { projectHash } from "@/domain/sessions";
+import { projectHash } from "@/domain/sessions.js";
 
 export class SessionStore {
   constructor(

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseMcpConfig, type McpPort, type McpServerDef, type McpToolInfo } from "@/domain/mcp";
+import { parseMcpConfig, type McpPort, type McpServerDef, type McpToolInfo } from "@/domain/mcp.js";
 
 interface JsonRpcResponse {
   id: number;

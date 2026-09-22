@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CliDriver,
   cliVersion,
+  extractCliText,
   findOnPath,
   headlessArgs,
   isDirectPath,
@@ -9,8 +10,8 @@ import {
   quoteCmdArg,
   resolveLaunch,
   type CliDriverDef,
-} from "@/infrastructure/cliDrivers";
-import { AuthError, DriverError } from "@/lib/errors";
+} from "@/infrastructure/cliDrivers.js";
+import { AuthError, DriverError } from "@/lib/errors.js";
 
 const FIXTURE = "tests/fixtures/cliEcho.js";
 
@@ -58,7 +59,6 @@ describe("cliDrivers", () => {
 
   it("sends prompts to the subprocess and extracts text", async () => {
     const result = await driver().sendMessage([{ role: "user", content: "hello" }]);
-
     expect(result.text).toContain("answer to hello");
     expect(result.usage.input).toBeGreaterThan(0);
   });
@@ -109,5 +109,28 @@ describe("cliDrivers", () => {
     const node = resolveLaunch(process.execPath, ["--version"]);
     expect(node.file.toLowerCase()).toContain("node");
     expect(quoteCmdArg("it's")).toBe("'it''s'");
+  });
+
+  it("extracts the answer from agy-style json envelopes", () => {
+    const envelope = JSON.stringify({
+      conversation_id: "f600d235",
+      status: "SUCCESS",
+      response: "APPROVE: all good",
+      duration_seconds: 60.5,
+      num_turns: 1,
+      usage: { input_tokens: 131101, output_tokens: 6879 },
+    });
+
+    expect(extractCliText(`${envelope}\n`)).toBe("APPROVE: all good");
+  });
+
+  it("extracts text from pretty-printed multi-line json", () => {
+    const stdout = ["{", '  "status": "SUCCESS",', '  "response": "done deal"', "}"].join("\n");
+
+    expect(extractCliText(stdout)).toBe("done deal");
+  });
+
+  it("keeps plain-text answers untouched", () => {
+    expect(extractCliText("just an answer\n")).toBe("just an answer");
   });
 });

@@ -6,7 +6,7 @@ import {
   renderContextBars,
   shouldCompact,
   transcriptTokens,
-} from "@/domain/tokenizer";
+} from "@/domain/tokenizer.js";
 
 describe("tokenizer", () => {
   it("estimates chars/4 with a minimum of 1", () => {
@@ -18,6 +18,13 @@ describe("tokenizer", () => {
   it("adds per-message overhead", () => {
     expect(messageTokens({ role: "user", content: "abcd" })).toBe(5);
     expect(transcriptTokens([])).toBe(0);
+  });
+
+  it("budgets tokens for attached images", () => {
+    const plain = messageTokens({ role: "user", content: "abcd" });
+    const withImages = messageTokens({ role: "user", content: "abcd", images: ["a.png", "b.png"] });
+
+    expect(withImages - plain).toBe(3000);
   });
 
   it("builds a categorized usage with a percentage", () => {

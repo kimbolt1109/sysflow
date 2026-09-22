@@ -1,6 +1,6 @@
-import type { FlowApp } from "@/app";
-import type { DailyUsage } from "@/infrastructure/usageStore";
-import { dailyTotals } from "@/infrastructure/usageStore";
+import type { FlowApp } from "@/app.js";
+import type { DailyUsage } from "@/infrastructure/usageStore.js";
+import { dailyTotals } from "@/infrastructure/usageStore.js";
 
 export async function renderStatus(app: FlowApp, daily: DailyUsage): Promise<string> {
   const lines: string[] = [];

@@ -1,8 +1,8 @@
 import { createInterface } from "node:readline";
-import type { FlowApp } from "@/app";
-import { checkPermission } from "@/domain/permissions";
-import type { PermissionMode, PermissionRule } from "@/domain/permissions";
-import { TOOL_DESCRIPTIONS, type ToolName } from "@/domain/toolDefs";
+import type { FlowApp } from "@/app.js";
+import { checkPermission } from "@/domain/permissions.js";
+import type { PermissionMode, PermissionRule } from "@/domain/permissions.js";
+import { TOOL_DESCRIPTIONS, type ToolName } from "@/domain/toolDefs.js";
 
 export type ConfirmVerdict = "allow" | "deny" | "edit";
 

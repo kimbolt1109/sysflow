@@ -1,5 +1,5 @@
-import type { ChatMessage } from "@/domain/models";
-import { buildContextUsage, estimateTokens, shouldCompact } from "@/domain/tokenizer";
+import type { ChatMessage } from "@/domain/models.js";
+import { buildContextUsage, estimateTokens, shouldCompact } from "@/domain/tokenizer.js";
 
 export interface CompactResult {
   history: ChatMessage[];

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeWith, detectTheme, themeByName, THEMES } from "@/api/theming";
+import { badgeWith, detectTheme, themeByName, THEMES } from "@/api/theming.js";
 
 describe("theming", () => {
   it("ships presets", () => {

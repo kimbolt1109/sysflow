@@ -1,4 +1,4 @@
-import type { ModelInfo } from "@/domain/models";
+import type { ModelInfo } from "@/domain/models.js";
 
 export interface DiscoveredModel {
   id: string;

@@ -1,14 +1,17 @@
-import { summarizeBoard } from "@/domain/blackboard";
-import type { OrchestrationMode } from "@/domain/models";
+import { summarizeBoard } from "@/domain/blackboard.js";
+import type { OrchestrationMode } from "@/domain/models.js";
 import {
+  finishCouncil,
   pickMode,
+  planCouncil,
   runCouncil,
   runRelay,
   runWorkers,
   type CouncilEvent,
+  type CouncilPlan,
   type Orchestrant,
-} from "@/domain/orchestrator";
-import { badgeWith, THEMES, type Theme } from "@/api/theming";
+} from "@/domain/orchestrator.js";
+import { badgeWith, THEMES, type Theme } from "@/api/theming.js";
 
 const DEFAULT_THEME = THEMES[0] as Theme;
 
@@ -31,6 +34,8 @@ export class CouncilSession {
   lead?: string;
   mode: OrchestrationMode = "council";
   rounds = 1;
+  planMode = false;
+  pendingPlan?: { task: string; staged: CouncilPlan };
   theme: Theme = DEFAULT_THEME;
   color = true;
 
@@ -49,13 +54,21 @@ export class CouncilSession {
 
   interject(cmd: string, arg: string): string {
     switch (cmd) {
-      case "agents":
-        return this.names()
+      case "agents": {
+        const roster = this.names()
           .map(
             (n) =>
               `${this.tag(n)}${this.muted.has(n) ? " (muted)" : ""}${this.lead === n ? " (lead)" : ""}${this.stopped.has(n) ? " (stopped)" : ""}`,
           )
           .join(" ");
+        const flags = [
+          this.planMode ? "plan-mode" : "",
+          this.pendingPlan !== undefined ? "plan pending (/approve)" : "",
+        ]
+          .filter((f) => f !== "")
+          .join(" · ");
+        return flags === "" ? roster : `${roster} · ${flags}`;
+      }
       case "mute":
         return this.toggle(this.muted, arg, "muted");
       case "unmute":
@@ -86,6 +99,18 @@ export class CouncilSession {
         this.rounds = n;
         return `rounds=${n}`;
       }
+      case "plan": {
+        if (arg === "on") this.planMode = true;
+        else if (arg === "off") {
+          this.planMode = false;
+          this.pendingPlan = undefined;
+        } else if (arg === "") this.planMode = !this.planMode;
+        else return `usage: /plan [on|off]`;
+        if (!this.planMode) this.pendingPlan = undefined;
+        return this.planMode
+          ? "plan-mode on: councils pause after the plan for /approve"
+          : "plan-mode off";
+      }
       default:
         return `unknown council command /${cmd}`;
     }
@@ -101,20 +126,33 @@ export class CouncilSession {
     return this.agents.filter((a) => !this.muted.has(a.name) && !this.stopped.has(a.name));
   }
 
-  async run(task: string, emit: (line: string) => void): Promise<CouncilRun> {
-    const sessionRecords: unknown[] = [{ type: "council-start", task, mode: this.mode }];
+  private track(
+    emit: (line: string) => void,
+    sessionRecords: unknown[],
+  ): {
+    show: (event: CouncilEvent) => void;
+    save: (record: unknown) => void;
+  } {
     const save = (record: unknown): void => {
       sessionRecords.push(record);
       this.appendRecord(record);
     };
-    const live = this.live();
-    if (live.length === 0) throw new Error("all agents muted or stopped");
     const show = (event: CouncilEvent): void => {
       const agent = event.agent ?? "";
       const who = agent === "" ? "" : `${this.tag(agent)} `;
       emit(`${phaseLine(event.phase)} ${who}${event.message}`);
       save({ type: "council-event", phase: event.phase, agent, message: event.message });
     };
+    return { show, save };
+  }
+
+  async run(task: string, emit: (line: string) => void): Promise<CouncilRun> {
+    const sessionRecords: unknown[] = [{ type: "council-start", task, mode: this.mode }];
+    const { show, save } = this.track(emit, sessionRecords);
+    const live = this.live();
+    if (live.length === 0) throw new Error("all agents muted or stopped");
+    // A fresh task supersedes any pending plan.
+    this.pendingPlan = undefined;
 
     if (this.mode === "solo" || live.length === 1) {
       const only = live[0] as Orchestrant;
@@ -146,11 +184,29 @@ export class CouncilSession {
       nested.mode = mode;
       nested.rounds = this.rounds;
       nested.lead = this.lead;
+      nested.planMode = this.planMode;
       nested.theme = this.theme;
       nested.color = this.color;
       for (const name of this.muted) nested.muted.add(name);
       for (const name of this.stopped) nested.stopped.add(name);
-      return nested.run(task, emit);
+      const out = await nested.run(task, emit);
+      this.pendingPlan = nested.pendingPlan;
+      return out;
+    }
+
+    if (this.planMode) {
+      const staged = await planCouncil(live, task, {
+        preferredLead: this.lead,
+        critiqueRounds: this.rounds,
+        active: () => true,
+        emit: show,
+      });
+      this.pendingPlan = { task, staged };
+      save({ type: "plan-pending", lead: staged.lead, plan: staged.plan });
+      return {
+        text: `## plan (lead ${staged.lead}) — awaiting approval\n${staged.plan}\n\n/approve to execute, or send new instructions to replan`,
+        sessionRecords,
+      };
     }
 
     const result = await runCouncil(live, task, {
@@ -165,14 +221,80 @@ export class CouncilSession {
       plan: result.plan,
       board: summarizeBoard(result.board),
       paused: result.pausedForUser,
+      pauseReason: result.pauseReason,
+      verify: result.verify,
+      retros: result.retros,
     });
     if (result.pausedForUser) {
-      return {
-        text: `paused: 2 reviewers rejected — lead ${result.lead} awaits your call (/promote, /handoff, or new instructions)`,
-        sessionRecords,
-      };
+      return { text: this.pausedText(result.lead, result.pauseReason), sessionRecords };
     }
-    return { text: withRetro(result.outcome.summary, result.retros), sessionRecords };
+    return { text: this.finishText(result), sessionRecords };
+  }
+
+  async approve(emit: (line: string) => void): Promise<CouncilRun | undefined> {
+    const pending = this.pendingPlan;
+    if (pending === undefined) return undefined;
+    this.pendingPlan = undefined;
+    const sessionRecords: unknown[] = [
+      { type: "council-resume", task: pending.task, lead: pending.staged.lead },
+    ];
+    const { show, save } = this.track(emit, sessionRecords);
+    const result = await finishCouncil(pending.staged, {
+      active: () => true,
+      emit: show,
+      maxRejections: 2,
+    });
+    save({
+      type: "council-end",
+      lead: result.lead,
+      plan: result.plan,
+      board: summarizeBoard(result.board),
+      paused: result.pausedForUser,
+      pauseReason: result.pauseReason,
+      verify: result.verify,
+      retros: result.retros,
+    });
+    if (result.pausedForUser) {
+      return { text: this.pausedText(result.lead, result.pauseReason), sessionRecords };
+    }
+    return { text: this.finishText(result), sessionRecords };
+  }
+
+  private finishText(result: {
+    lead: string;
+    plan: string;
+    outcome: { summary: string };
+    verify: Array<{
+      agent: string;
+      lens: string;
+      score: number;
+      passed: boolean;
+      notes: string;
+      checks: string[];
+    }>;
+    retros: Record<string, string>;
+  }): string {
+    const planned = `## plan (lead ${result.lead})\n${result.plan}`;
+    const verification =
+      result.verify.length === 0
+        ? ""
+        : `\n\n## verification\n${result.verify
+            .map(
+              (v) =>
+                `- ${v.agent} (${v.lens}): ${v.score}%${v.passed ? "" : " FAILED"} — ${v.notes}${v.checks.length > 0 ? ` [${v.checks.join("; ")}]` : ""}`,
+            )
+            .join("\n")}`;
+    return withRetro(
+      `${planned}${verification}\n\n## result\n${result.outcome.summary}`,
+      result.retros,
+    );
+  }
+
+  private pausedText(lead: string, reason?: string): string {
+    return (
+      reason ??
+      `paused: 2 reviewers rejected — lead ${lead} awaits your call (/promote, /handoff, or new instructions)`
+    );
   }
 
   private async decompose(

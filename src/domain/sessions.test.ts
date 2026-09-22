@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isUuid, projectHash, sessionFileName, sessionPreview } from "@/domain/sessions";
+import { isUuid, projectHash, sessionFileName, sessionPreview } from "@/domain/sessions.js";
 
 describe("sessions", () => {
   it("hashes project paths deterministically", () => {

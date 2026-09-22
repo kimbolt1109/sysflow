@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { matchRouting } from "@/domain/routing";
-import type { RoutingRule } from "@/domain/models";
+import { matchRouting } from "@/domain/routing.js";
+import type { RoutingRule } from "@/domain/models.js";
 
 const RULES: RoutingRule[] = [
   {

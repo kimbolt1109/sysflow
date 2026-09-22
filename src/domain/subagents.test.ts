@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSubagentMd, subagentListing } from "@/domain/subagents";
+import { parseSubagentMd, subagentListing } from "@/domain/subagents.js";
 
 describe("subagents", () => {
   it("parses agent frontmatter and prompt", () => {

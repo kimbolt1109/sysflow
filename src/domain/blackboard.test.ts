@@ -10,7 +10,7 @@ import {
   setPhase,
   setPlan,
   summarizeBoard,
-} from "@/domain/blackboard";
+} from "@/domain/blackboard.js";
 
 describe("blackboard", () => {
   it("drafts plans and scores critiques", () => {

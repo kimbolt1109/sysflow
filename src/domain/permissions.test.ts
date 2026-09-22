@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { checkPermission, matchesGlob, parseRule } from "@/domain/permissions";
+import {
+  checkPermission,
+  isDestructive,
+  matchesGlob,
+  nextPermissionMode,
+  parseRule,
+} from "@/domain/permissions.js";
 
 describe("permissions", () => {
   it("matches gitignore-style globs", () => {
@@ -25,9 +31,29 @@ describe("permissions", () => {
     expect(checkPermission("default", rules, "Bash", "rm -rf /")).toBe("deny");
   });
 
-  it("auto-allows reads but asks for writes by default", () => {
+  it("auto-allows everything but destructive acts by default", () => {
     expect(checkPermission("default", [], "Read", "~/.zshrc")).toBe("allow");
-    expect(checkPermission("default", [], "Edit", "docs/a.md")).toBe("ask");
+    expect(checkPermission("default", [], "Edit", "docs/a.md")).toBe("allow");
+    expect(checkPermission("default", [], "Bash", "npm run test")).toBe("allow");
+    expect(checkPermission("default", [], "Bash", "rm -rf /tmp/x")).toBe("ask");
+    expect(checkPermission("default", [], "Remove", "a.txt")).toBe("ask");
+  });
+
+  it("detects destructive operations", () => {
+    expect(isDestructive("remove", { path: "a" })).toBe(true);
+    expect(isDestructive("Bash", { command: "rm -rf /" })).toBe(true);
+    expect(isDestructive("bash", { command: "git clean -fdx" })).toBe(true);
+    expect(isDestructive("bash", { command: "Remove-Item -Recurse C:\\x" })).toBe(true);
+    expect(isDestructive("bash", { command: "npm run test" })).toBe(false);
+    expect(isDestructive("write", { path: "a" })).toBe(false);
+    expect(isDestructive("click", { x: 1, y: 2 })).toBe(false);
+  });
+
+  it("cycles default, acceptEdits, and plan", () => {
+    expect(nextPermissionMode("default")).toBe("acceptEdits");
+    expect(nextPermissionMode("acceptEdits")).toBe("plan");
+    expect(nextPermissionMode("plan")).toBe("default");
+    expect(nextPermissionMode("bypassPermissions")).toBe("default");
   });
 
   it("matches domain-qualified web rules", () => {
@@ -40,7 +66,7 @@ describe("permissions", () => {
       checkPermission("default", [parseRule("WebFetch(domain:github.com)", "allow")], "WebFetch", {
         url: "https://example.com/z",
       }),
-    ).toBe("ask");
+    ).toBe("allow");
   });
 
   it("bypasses everything in bypassPermissions mode", () => {
@@ -50,5 +76,20 @@ describe("permissions", () => {
   it("restricts plan mode to read-only tools", () => {
     expect(checkPermission("plan", [], "Read", "a")).toBe("allow");
     expect(checkPermission("plan", [], "Bash", "ls")).toBe("ask");
+  });
+
+  it("matches lowercase runtime tool names", () => {
+    expect(checkPermission("plan", [], "read", "a")).toBe("allow");
+    expect(checkPermission("plan", [], "glob", "**/*.ts")).toBe("allow");
+    expect(checkPermission("plan", [], "bash", "ls")).toBe("ask");
+    expect(checkPermission("acceptEdits", [], "edit", "a.md")).toBe("allow");
+    expect(checkPermission("acceptEdits", [], "write", "a.md")).toBe("allow");
+    expect(checkPermission("acceptEdits", [], "bash", "ls")).toBe("allow");
+    expect(checkPermission("default", [parseRule("read(*)", "deny")], "read", "a")).toBe("deny");
+    expect(
+      checkPermission("default", [parseRule("WebFetch(domain:github.com)", "allow")], "webfetch", {
+        url: "https://github.com/x/y",
+      }),
+    ).toBe("allow");
   });
 });

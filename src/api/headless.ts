@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { FlowApp } from "@/app";
-import type { CliArgs } from "@/api/cli";
-import type { CouncilSession } from "@/api/council";
-import type { ChatMessage } from "@/domain/models";
+import type { FlowApp } from "@/app.js";
+import type { CliArgs } from "@/api/cli.js";
+import type { CouncilSession } from "@/api/council.js";
+import { formatMcpInventory } from "@/domain/mcp.js";
+import { runToolLoop, TOOL_SYSTEM, type ToolCheck } from "@/infrastructure/agentLoop.js";
+import { fetchPageText } from "@/lib/webfetch.js";
+import { openBrowser } from "@/lib/browser.js";
 
 export interface HeadlessResult {
   text: string;
@@ -15,6 +18,10 @@ export interface HeadlessResult {
 
 export interface HeadlessOptions {
   notify?: boolean;
+  /** past council lessons from the composition root ("" / undefined when none) */
+  lessons?: string;
+  /** permission gate; defaults to allow (ask-gated calls deny without an asker) */
+  check?: ToolCheck;
 }
 
 export async function runHeadless(
@@ -64,27 +71,49 @@ export async function runHeadless(
     return finish(run.text, app.driver.countTokens(prompt), app.driver.countTokens(run.text));
   }
 
-  const messages: ChatMessage[] = [{ role: "user", content: prompt }];
+  const lessons = opts.lessons ?? "";
+  const soloCheck = opts.check ?? (() => "allow" as const);
+  const loop = await runToolLoop(app.driver, app.tools, TOOL_SYSTEM, prompt, {
+    seed: lessons === "" ? [] : [{ role: "system", content: lessons }],
+    maxTurns: 12,
+    check: soloCheck,
+    hooks: {
+      before: (name, toolInput) =>
+        app.hooks.fire("PreToolUse", { tool_name: name, tool_input: toolInput }),
+      after: (name, toolInput, output) =>
+        app.hooks
+          .fire("PostToolUse", {
+            tool_name: name,
+            tool_input: toolInput,
+            output: output.slice(0, 2000),
+          })
+          .then(() => undefined),
+    },
+    onSkill: (name) => {
+      const skill = app.skills.find((s) => s.name === name);
+      if (skill?.disableModelInvocation === true) return undefined;
+      return app.skillBody(name);
+    },
+    onWebfetch: (url) => fetchPageText(url),
+    onBrowse: (url) => openBrowser(url),
+    onListMcpTools: async () => formatMcpInventory(await app.mcp.toolInventory()),
+    onMcpTool: (toolName, args) => app.mcp.call(toolName, args),
+  });
+  const text = loop.answer;
+  const usage = loop.usage;
   app.sessions.append(sessionId, { type: "headless-start", prompt, model });
 
   if (args.outputFormat === "stream-json") {
-    const result = await app.driver.streamMessage(messages, (token) => {
-      emit(JSON.stringify({ type: "token", delta: token }));
-    });
-    app.sessions.append(sessionId, {
-      type: "headless-end",
-      text: result.text,
-      usage: result.usage,
-    });
+    emit(JSON.stringify({ type: "token", delta: text }));
+    app.sessions.append(sessionId, { type: "headless-end", text, usage });
     await app.hooks.fire("Notification", { session_id: sessionId, kind: "task-complete" });
     await app.hooks.fire("Stop", { session_id: sessionId });
-    return finish(result.text, result.usage.input, result.usage.output);
+    return finish(text, usage.input, usage.output);
   }
-  const result = await app.driver.sendMessage(messages);
-  app.sessions.append(sessionId, { type: "headless-end", text: result.text, usage: result.usage });
+  app.sessions.append(sessionId, { type: "headless-end", text, usage });
   await app.hooks.fire("Notification", { session_id: sessionId, kind: "task-complete" });
   await app.hooks.fire("Stop", { session_id: sessionId });
-  return finish(result.text, result.usage.input, result.usage.output);
+  return finish(text, usage.input, usage.output);
 }
 
 export function formatHeadless(result: HeadlessResult, args: CliArgs): string {

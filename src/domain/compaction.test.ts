@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ChatMessage } from "@/domain/models";
-import { buildExtractiveSummary, compactHistory, elideToolOutputs } from "@/domain/compaction";
+import type { ChatMessage } from "@/domain/models.js";
+import { buildExtractiveSummary, compactHistory, elideToolOutputs } from "@/domain/compaction.js";
 
 function msg(role: ChatMessage["role"], content: string): ChatMessage {
   return { role, content };

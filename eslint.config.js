@@ -1,8 +1,8 @@
-const js = require("@eslint/js");
-const tseslint = require("typescript-eslint");
-const prettier = require("eslint-config-prettier");
+import js from "@eslint/js";
+import tseslint from "typescript-eslint";
+import prettier from "eslint-config-prettier";
 
-module.exports = tseslint.config(
+export default tseslint.config(
   { ignores: ["dist/", "node_modules/", "coverage/", "research/"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -16,18 +16,16 @@ module.exports = tseslint.config(
     },
   },
   {
-    // This config file itself is CommonJS (the package has no "type": "module").
-    files: ["**/*.js"],
+    // Plain-node fixture scripts (no TS, no imports): provide node globals.
+    files: ["tests/fixtures/**/*.{js,cjs}"],
     languageOptions: {
-      sourceType: "commonjs",
       globals: {
-        require: "readonly",
-        module: "writable",
-        __dirname: "readonly",
         console: "readonly",
         process: "readonly",
         setTimeout: "readonly",
         clearTimeout: "readonly",
+        require: "readonly",
+        module: "writable",
       },
     },
     rules: {

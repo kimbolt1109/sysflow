@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findCommand, parseSlash, SLASH_COMMANDS, substituteArgs } from "@/domain/commands";
+import { findCommand, parseSlash, SLASH_COMMANDS, substituteArgs } from "@/domain/commands.js";
 
 const SPEC_COMMANDS = [
   "help",

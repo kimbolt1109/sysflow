@@ -1,12 +1,15 @@
-import type { ChatMessage } from "@/domain/models";
+import type { ChatMessage } from "@/domain/models.js";
 
 export function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
 export function messageTokens(message: ChatMessage): number {
-  return estimateTokens(message.content) + 4;
+  return estimateTokens(message.content) + 4 + (message.images?.length ?? 0) * IMAGE_TOKENS;
 }
+
+/** rough per-image estimate (Anthropic-class vision pricing); documented, not exact. */
+export const IMAGE_TOKENS = 1500;
 
 export function transcriptTokens(messages: ChatMessage[]): number {
   return messages.reduce((sum, m) => sum + messageTokens(m), 0);

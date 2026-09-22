@@ -2,6 +2,12 @@ export type PermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermiss
 
 export type PermissionDecision = "allow" | "ask" | "deny";
 
+/** Shift+Tab cycle order (bypass stays startup-flag-only). */
+export function nextPermissionMode(mode: PermissionMode): PermissionMode {
+  const order: PermissionMode[] = ["default", "acceptEdits", "plan"];
+  const at = order.indexOf(mode);
+  return order[(at + 1) % order.length] as PermissionMode;
+}
 export interface PermissionRule {
   tool: string;
   pattern: string;
@@ -89,21 +95,48 @@ export function checkPermission(
   tool: string,
   input: unknown,
 ): PermissionDecision {
+  // Tool fences arrive lowercase ("read"); rules and modes may use any case.
+  const name = tool.toLowerCase();
   if (mode === "bypassPermissions") return "allow";
   if (mode === "plan")
-    return tool === "Read" || tool === "Glob" || tool === "Grep" ? "allow" : "ask";
-  if (mode === "acceptEdits" && (tool === "Read" || tool === "Edit" || tool === "Write")) {
+    return name === "read" || name === "glob" || name === "grep" ? "allow" : "ask";
+  if (mode === "acceptEdits" && (name === "read" || name === "edit" || name === "write")) {
     return "allow";
   }
   const target = targetFor(tool, input);
   let decision: PermissionDecision | undefined;
   for (const rule of rules) {
-    if (rule.tool !== "*" && rule.tool !== tool) continue;
+    if (rule.tool !== "*" && rule.tool.toLowerCase() !== name) continue;
     if (matchesGlob(rule.pattern, target)) {
       decision = rule.decision;
     }
   }
   if (decision !== undefined) return decision;
-  if (tool === "Read" || tool === "Glob" || tool === "Grep") return "allow";
-  return "ask";
+  if (name === "read" || name === "glob" || name === "grep") return "allow";
+  return isDestructive(tool, input) ? "ask" : "allow";
+}
+
+const DESTRUCTIVE_BASH: RegExp[] = [
+  /\brm\s+[^\n]*-[a-z]*r/i,
+  /\brmdir\s+\/s/i,
+  /\bdel\s+[^\n]*\/s/i,
+  /\brd\s+\/s/i,
+  /\bformat\b/i,
+  /\bmkfs\b/i,
+  /(^|[\s;&|])dd\s/i,
+  /:\(\)\s*\{\s*:\|\s*:\s*&\s*\}\s*;/,
+  /\bshutdown\b/i,
+  /\brestart-computer\b/i,
+  /remove-item\b[^\n]*-recurse/i,
+  /\bgit\s+clean\s+-[a-z]*f[a-z]*d/i,
+  /\bgit\s+reset\s+--hard/i,
+];
+
+/** Critical operations that always need approval: data destruction. Case-insensitive on tool names. */
+export function isDestructive(tool: string, input: unknown): boolean {
+  const name = tool.toLowerCase();
+  if (name === "remove") return true;
+  if (name !== "bash") return false;
+  const command = targetFor(tool, input);
+  return DESTRUCTIVE_BASH.some((rx) => rx.test(command));
 }

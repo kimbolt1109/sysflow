@@ -21,5 +21,8 @@ research/
 .aider*/
 .gemini/
 
+# agent screenshots (computer-use captures, machine-local)
+.flow/screenshots/
+
 # incremental compiler state
 *.tsbuildinfo

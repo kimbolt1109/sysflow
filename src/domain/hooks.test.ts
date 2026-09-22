@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HOOK_EVENTS, isHookEvent, parseHookDecision } from "@/domain/hooks";
+import { HOOK_EVENTS, isHookEvent, parseHookDecision } from "@/domain/hooks.js";
 
 describe("hooks", () => {
   it("covers the spec event set", () => {

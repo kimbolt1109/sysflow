@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { resolveLaunch } from "@/infrastructure/cliDrivers";
-import type { DiscoveredModel } from "@/domain/discovery";
+import { resolveLaunch } from "@/infrastructure/cliDrivers.js";
+import type { DiscoveredModel } from "@/domain/discovery.js";
 
 export type RunFn = (command: string, args: string[]) => string;
 

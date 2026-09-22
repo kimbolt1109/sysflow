@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeCheckpoint, planRestore, takeCheckpoint } from "@/domain/checkpoints";
+import { describeCheckpoint, planRestore, takeCheckpoint } from "@/domain/checkpoints.js";
 
 describe("checkpoints", () => {
   it("takes and plans restores", () => {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  finishCouncil,
   pickMode,
+  planCouncil,
   runCouncil,
   runRelay,
   runWorkers,
@@ -9,7 +11,9 @@ import {
   type Orchestrant,
   type PlanDraft,
   type Review,
-} from "@/domain/orchestrator";
+  type VerifyLens,
+  type VerifyVerdict,
+} from "@/domain/orchestrator.js";
 
 class ScriptAgent implements Orchestrant {
   approve = true;
@@ -44,6 +48,10 @@ class ScriptAgent implements Orchestrant {
     return this.approve
       ? { approved: true, notes: "lgtm" }
       : { approved: false, notes: "needs work" };
+  }
+
+  async verify(_plan: string, _outcome: ExecuteOutcome, lens: VerifyLens): Promise<VerifyVerdict> {
+    return { score: 90, passed: true, notes: `${lens} looks good`, checks: ["spec read"] };
   }
 
   async retro(): Promise<string> {
@@ -121,6 +129,41 @@ describe("orchestrator", () => {
 
     expect(Object.keys(outcomes).sort()).toEqual(["s1", "s2"]);
     expect(board.files).toEqual({});
+  });
+
+  it("splits planning from finishing", async () => {
+    const agents = [new ScriptAgent("a", "plan-a", 9), new ScriptAgent("b", "plan-b", 9)];
+    const events: CouncilEvent[] = [];
+
+    const staged = await planCouncil(agents, "ship it", { emit: (e) => events.push(e) });
+
+    expect(staged.lead).toBe("a");
+    expect(staged.plan).toContain("merged: a+b");
+    expect(events.some((e) => e.phase === "SYNTHESIS")).toBe(true);
+    expect(events.some((e) => e.phase === "EXECUTION")).toBe(false);
+
+    const result = await finishCouncil(staged, { emit: (e) => events.push(e) });
+
+    expect(result.pausedForUser).toBe(false);
+    expect(result.outcome.summary).toContain("did: merged");
+    expect(result.verify).toHaveLength(2);
+    expect(result.verify[0]).toMatchObject({ agent: "a", score: 90, passed: true });
+    expect(events.some((e) => e.phase === "VERIFY")).toBe(true);
+  });
+
+  it("pauses when verification fails its benchmark", async () => {
+    class FailingAgent extends ScriptAgent {
+      override async verify(): Promise<VerifyVerdict> {
+        return { score: 20, passed: false, notes: "broken", checks: [] };
+      }
+    }
+    const agents = [new FailingAgent("a", "plan A", 9), new ScriptAgent("b", "plan B", 9)];
+
+    const result = await runCouncil(agents, "ship it", {});
+
+    expect(result.pausedForUser).toBe(true);
+    expect(result.pauseReason).toContain("verification failed");
+    expect(result.verify.some((v) => !v.passed)).toBe(true);
   });
 
   it("picks modes heuristically for auto", () => {

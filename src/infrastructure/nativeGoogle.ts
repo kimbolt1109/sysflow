@@ -1,6 +1,7 @@
-import type { ChatMessage, QuotaInfo, TokenUsage } from "@/domain/models";
-import type { Driver, SendResult } from "@/domain/drivers";
-import { AuthError, DriverError, QuotaError } from "@/lib/errors";
+import type { ChatMessage, QuotaInfo, TokenUsage } from "@/domain/models.js";
+import type { Driver, SendResult } from "@/domain/drivers.js";
+import { loadImageParts } from "@/infrastructure/imageFiles.js";
+import { AuthError, DriverError, QuotaError } from "@/lib/errors.js";
 
 export interface GoogleOptions {
   apiKey: string;
@@ -11,6 +12,16 @@ export interface GoogleOptions {
 
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function messageParts(m: ChatMessage): Array<Record<string, unknown>> {
+  const parts: Array<Record<string, unknown>> = [
+    { text: m.role === "tool" ? `[tool] ${m.content}` : m.content },
+  ];
+  for (const img of loadImageParts(m.images)) {
+    parts.push({ inlineData: { mimeType: img.mime, data: img.base64 } });
+  }
+  return parts;
 }
 
 export class GoogleDriver implements Driver {
@@ -53,12 +64,12 @@ export class GoogleDriver implements Driver {
 
   private toContents(
     messages: ChatMessage[],
-  ): Array<{ role: string; parts: Array<{ text: string }> }> {
+  ): Array<{ role: string; parts: Array<Record<string, unknown>> }> {
     return messages
       .filter((m) => m.role !== "system")
       .map((m) => ({
         role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.role === "tool" ? `[tool] ${m.content}` : m.content }],
+        parts: messageParts(m),
       }));
   }
 

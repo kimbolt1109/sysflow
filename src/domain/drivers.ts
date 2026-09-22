@@ -1,4 +1,4 @@
-import type { ChatMessage, DriverKind, QuotaInfo, TokenUsage } from "@/domain/models";
+import type { ChatMessage, DriverKind, QuotaInfo, TokenUsage } from "@/domain/models.js";
 
 export interface SendResult {
   text: string;

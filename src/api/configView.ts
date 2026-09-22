@@ -1,4 +1,4 @@
-import type { FlowApp } from "@/app";
+import type { FlowApp } from "@/app.js";
 
 export function describeConfig(app: FlowApp, only?: string): string {
   const auth = (present: boolean): string => (present ? "set" : "missing");

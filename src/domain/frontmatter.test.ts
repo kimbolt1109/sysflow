@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { fieldAsList, fieldAsString, parseFrontmatter } from "@/domain/frontmatter";
+import {
+  fieldAsBoolean,
+  fieldAsList,
+  fieldAsString,
+  parseFrontmatter,
+} from "@/domain/frontmatter.js";
 
 describe("frontmatter", () => {
   it("parses scalar and list fields plus body", () => {
@@ -18,5 +23,13 @@ describe("frontmatter", () => {
 
     expect(parsed.fields).toEqual({});
     expect(parsed.body).toBe("# plain");
+  });
+
+  it("reads booleans with a fallback", () => {
+    const parsed = parseFrontmatter("---\na: true\nb: no\n---\n");
+
+    expect(fieldAsBoolean(parsed.fields, "a", false)).toBe(true);
+    expect(fieldAsBoolean(parsed.fields, "b", true)).toBe(false);
+    expect(fieldAsBoolean(parsed.fields, "missing", true)).toBe(true);
   });
 });

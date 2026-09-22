@@ -8,7 +8,7 @@ import {
   type HookDef,
   type HookEvent,
   type HooksPort,
-} from "@/domain/hooks";
+} from "@/domain/hooks.js";
 
 function stringList(value: unknown): string[] {
   if (typeof value === "string") return [value];

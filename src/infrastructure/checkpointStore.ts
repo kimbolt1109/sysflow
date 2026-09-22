@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { planRestore, takeCheckpoint, type Checkpoint } from "@/domain/checkpoints";
-import type { ToolsPort } from "@/domain/toolDefs";
+import { planRestore, takeCheckpoint, type Checkpoint } from "@/domain/checkpoints.js";
+import type { ToolsPort } from "@/domain/toolDefs.js";
 
 const MAX_FILES = 500;
 const MAX_TOTAL_BYTES = 5 * 1024 * 1024;

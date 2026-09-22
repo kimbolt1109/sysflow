@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { McpPool } from "@/infrastructure/mcpClients";
+import { McpPool } from "@/infrastructure/mcpClients.js";
 
-const FIXTURE = "tests/fixtures/mcpEcho.js";
+const FIXTURE = "tests/fixtures/mcpEcho.cjs";
 
 describe("mcpClients", () => {
   it("lists namespaced tools from a stdio server", async () => {

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { LocalTools, matchGlobParts } from "@/infrastructure/localTools";
+import { LocalTools, keyCode, matchGlobParts, parseClick } from "@/infrastructure/localTools.js";
 
 describe("matchGlobParts", () => {
   it("matches *, **, and ?", () => {
@@ -73,5 +73,25 @@ describe("LocalTools", () => {
 
     expect(result.ok).toBe(true);
     expect(result.output).toBe("ok");
+  });
+
+  it("validates computer pointer input without touching the mouse", async () => {
+    expect(parseClick(100, 200, "left")).toEqual({ x: 100, y: 200, button: "left" });
+    expect(parseClick(100, 200, "RIGHT")).toEqual({ x: 100, y: 200, button: "right" });
+    expect(parseClick(-1, 0, "left")).toContain("integer");
+    expect(parseClick(1.5, 0, "left")).toContain("integer");
+    expect(parseClick(0, 0, "laser")).toContain("left|right|middle");
+
+    const denied = await tools.click(-5, 0);
+    expect(denied.ok).toBe(false);
+  });
+
+  it("validates keys and text without sending input", async () => {
+    expect(keyCode("Enter")).toBe("{ENTER}");
+    expect(keyCode("f5")).toBe("{F5}");
+    expect(keyCode("nope")).toBeUndefined();
+
+    expect((await tools.key("nope")).ok).toBe(false);
+    expect((await tools.type("")).ok).toBe(false);
   });
 });

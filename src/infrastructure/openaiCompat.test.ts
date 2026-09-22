@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createOllamaDriver, createOpenaiDriver } from "@/infrastructure/openaiCompat";
-import { AuthError } from "@/lib/errors";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createOllamaDriver, createOpenaiDriver } from "@/infrastructure/openaiCompat.js";
+import { AuthError } from "@/lib/errors.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
@@ -33,6 +36,27 @@ describe("openaiCompat", () => {
     await expect(driver.sendMessage([{ role: "user", content: "hi" }])).rejects.toBeInstanceOf(
       AuthError,
     );
+  });
+
+  it("sends screenshots as image_url parts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flow-shot-"));
+    try {
+      const path = join(dir, "shot.png");
+      writeFileSync(path, Buffer.from("fakepng"));
+      const fetchFn = vi.fn(async () =>
+        jsonResponse({ choices: [{ message: { content: "seen" } }] }),
+      );
+      const driver = createOpenaiDriver("openai/gpt-5", "k", fetchFn);
+
+      await driver.sendMessage([{ role: "user", content: "look", images: [path] }]);
+
+      const call = fetchFn.mock.calls[0] as [string, RequestInit] | undefined;
+      const body = String((call as [string, RequestInit])[1].body);
+      expect(body).toContain("image_url");
+      expect(body).toContain(Buffer.from("fakepng").toString("base64"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("streams deltas until [DONE]", async () => {

@@ -1,6 +1,7 @@
-import type { ChatMessage, QuotaInfo, TokenUsage } from "@/domain/models";
-import type { Driver, SendResult } from "@/domain/drivers";
-import { AuthError, DriverError, QuotaError } from "@/lib/errors";
+import type { ChatMessage, QuotaInfo, TokenUsage } from "@/domain/models.js";
+import type { Driver, SendResult } from "@/domain/drivers.js";
+import { loadImageParts } from "@/infrastructure/imageFiles.js";
+import { AuthError, DriverError, QuotaError } from "@/lib/errors.js";
 
 export interface CompatOptions {
   apiKey?: string;
@@ -26,6 +27,18 @@ function textOf(content: unknown): string {
     }
   }
   return parts.join("");
+}
+
+function messageContent(m: ChatMessage): unknown {
+  const images = loadImageParts(m.images);
+  if (images.length === 0) return m.content;
+  return [
+    { type: "text", text: m.content },
+    ...images.map((img) => ({
+      type: "image_url",
+      image_url: { url: `data:${img.mime};base64,${img.base64}` },
+    })),
+  ];
 }
 
 export class OpenAiCompatDriver implements Driver {
@@ -101,7 +114,7 @@ export class OpenAiCompatDriver implements Driver {
           model: this.id.includes("/") ? this.id.split("/").slice(1).join("/") : this.id,
           messages: messages.map((m) => ({
             role: m.role === "tool" ? "user" : m.role,
-            content: m.content,
+            content: messageContent(m),
           })),
           stream: false,
         }),
@@ -139,7 +152,7 @@ export class OpenAiCompatDriver implements Driver {
           model: this.id.includes("/") ? this.id.split("/").slice(1).join("/") : this.id,
           messages: messages.map((m) => ({
             role: m.role === "tool" ? "user" : m.role,
-            content: m.content,
+            content: messageContent(m),
           })),
           stream: true,
         }),

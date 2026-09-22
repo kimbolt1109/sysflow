@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createApp } from "@/app";
-import { describeConfig } from "@/api/configView";
-import { loadConfig } from "@/config";
+import { createApp } from "@/app.js";
+import { describeConfig } from "@/api/configView.js";
+import { loadConfig } from "@/config.js";
 
 describe("configView", () => {
   let dir = "";

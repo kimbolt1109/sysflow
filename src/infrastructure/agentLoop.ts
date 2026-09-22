@@ -1,10 +1,15 @@
-import type { Driver } from "@/domain/drivers";
-import type { HookDecision } from "@/domain/hooks";
-import { parseMcpToolName } from "@/domain/mcp";
-import type { ChatMessage } from "@/domain/models";
-import { parseToolCall, type ToolCall, type ToolsPort } from "@/domain/toolDefs";
+import type { Driver } from "@/domain/drivers.js";
+import type { HookDecision } from "@/domain/hooks.js";
+import { parseMcpToolName } from "@/domain/mcp.js";
+import type { ChatMessage, TokenUsage } from "@/domain/models.js";
+import {
+  parseToolCall,
+  type ToolCall,
+  type ToolResult,
+  type ToolsPort,
+} from "@/domain/toolDefs.js";
 
-export type ToolDecision = "allow" | "deny";
+export type ToolDecision = "allow" | "deny" | "ask";
 
 export type ToolCheck = (
   tool: string,
@@ -43,13 +48,19 @@ export function parseToolFences(text: string): LoopCall[] {
 }
 
 export const TOOL_SYSTEM = [
-  "You have file, shell, subagent, and MCP tools. To use one, emit a fenced block:",
+  "You have file, shell, web, subagent, skill, and MCP tools. To use one, emit a fenced block:",
   "```tool:write",
   '{"path": "a/b.ts", "content": "..."}',
   "```",
   "Tools: read {path} · write {path, content} · edit {path, oldString, newString} ·",
-  "bash {command} · glob {pattern} · grep {pattern, include?} ·",
-  "task {subagent_type, prompt} (spawn a subagent) · mcp__server__tool {arguments}.",
+  "bash {command} · glob {pattern} · grep {pattern, include?} · webfetch {url} (page as text) ·",
+  "task {subagent_type, prompt} (spawn a subagent) · skill {name} (load a skill body first) ·",
+  "question {question, options?} (ask the user when blocked on a choice) ·",
+  "screenshot (see the screen) · click {x, y, button?} · type {text} · key {name} ·",
+  "browse {url} (open the real browser) · mcp {} (list available MCP tools) ·",
+  "mcp__server__tool {arguments}.",
+  "Test web work with the real flow: start the app detached, browse its URL,",
+  "screenshot to see it, then click/type through everything that matters.",
   "One call per fence; you may emit several. Text outside fences is your reply.",
 ].join("\n");
 
@@ -58,6 +69,7 @@ export interface LoopResult {
   answer: string;
   filesChanged: string[];
   turns: number;
+  usage: TokenUsage;
 }
 
 export async function runToolLoop(
@@ -67,10 +79,17 @@ export async function runToolLoop(
   task: string,
   opts: {
     maxTurns?: number;
+    /** prior turns replayed between system and task (solo continuity) */
+    seed?: ChatMessage[];
     check?: ToolCheck;
     emit?: (text: string) => void;
     hooks?: LoopHooks;
     onTask?: (subagent: string, prompt: string) => Promise<string>;
+    onSkill?: (name: string) => Promise<string | undefined> | string | undefined;
+    onQuestion?: (question: string, options: string[]) => Promise<string>;
+    onWebfetch?: (url: string) => Promise<string>;
+    onBrowse?: (url: string) => Promise<string>;
+    onListMcpTools?: () => Promise<string>;
     onMcpTool?: (namespaced: string, args: unknown) => Promise<string>;
   } = {},
 ): Promise<LoopResult> {
@@ -78,18 +97,22 @@ export async function runToolLoop(
   const check = opts.check ?? (() => "allow" as const);
   const transcript: ChatMessage[] = [
     { role: "system", content: system },
+    ...(opts.seed ?? []),
     { role: "user", content: task },
   ];
   const filesChanged = new Set<string>();
   let answer = "";
   let turns = 0;
+  const usage: TokenUsage = { input: 0, output: 0 };
   for (let turn = 0; turn < maxTurns; turn += 1) {
     turns = turn + 1;
     let text = "";
-    await driver.streamMessage(transcript, (token) => {
+    const streamed = await driver.streamMessage(transcript, (token) => {
       text += token;
       opts.emit?.(token);
     });
+    usage.input += streamed.usage.input;
+    usage.output += streamed.usage.output;
     transcript.push({ role: "assistant", content: text });
     const calls = parseToolFences(text);
     if (calls.length === 0) {
@@ -98,19 +121,49 @@ export async function runToolLoop(
     }
     answer = text;
     for (const call of calls) {
-      transcript.push({ role: "tool", name: call.name, content: await runLoopCall(call) });
+      const out = await runLoopCall(call);
+      transcript.push({
+        role: "tool",
+        name: call.name,
+        content: out.text,
+        ...(out.images !== undefined ? { images: out.images } : {}),
+      });
     }
   }
-  return { transcript, answer, filesChanged: [...filesChanged], turns };
+  return { transcript, answer, filesChanged: [...filesChanged], turns, usage };
 
-  async function runLoopCall(call: LoopCall): Promise<string> {
+  async function runLoopCall(call: LoopCall): Promise<{ text: string; images?: string[] }> {
     const hook = await opts.hooks?.before(call.name, call.input);
-    if (hook?.decision === "block") return `hook blocked ${call.name}: ${hook.reason}`;
+    if (hook?.decision === "block") return { text: `hook blocked ${call.name}: ${hook.reason}` };
     const decision = await check(call.name, call.input);
-    if (decision === "deny") return `denied by policy: ${call.name}`;
+    if (decision === "deny") return { text: `denied by policy: ${call.name}` };
+    if (decision === "ask") {
+      if (opts.onQuestion === undefined) {
+        return { text: `denied by policy: ${call.name} (needs approval; non-interactive)` };
+      }
+      const summary = JSON.stringify(call.input).slice(0, 200);
+      const answer = await opts.onQuestion(`Allow ${call.name} ${summary}?`, [
+        "allow once",
+        "deny",
+      ]);
+      if (!/^\s*(allow|1|y|yes)\b/i.test(answer)) {
+        return { text: `denied by policy: ${call.name}` };
+      }
+    }
     let output: string;
+    let images: string[] | undefined;
     if (call.name === "task") {
       output = await runTaskCall(call.input);
+    } else if (call.name === "skill") {
+      output = await runSkillCall(call.input);
+    } else if (call.name === "question") {
+      output = await runQuestionCall(call.input);
+    } else if (call.name === "webfetch") {
+      output = await runWebfetchCall(call.input);
+    } else if (call.name === "browse") {
+      output = await runBrowseCall(call.input);
+    } else if (call.name === "mcp") {
+      output = await runMcpListCall();
     } else if (parseMcpToolName(call.name) !== undefined) {
       output = await runMcpCall(call.name, call.input);
     } else {
@@ -120,9 +173,10 @@ export async function runToolLoop(
         if (typeof path === "string") filesChanged.add(path);
       }
       output = local.output;
+      images = local.images;
     }
     await opts.hooks?.after(call.name, call.input, output);
-    return output.slice(0, 8000);
+    return { text: output.slice(0, 8000), images };
   }
 
   async function runTaskCall(input: Record<string, unknown>): Promise<string> {
@@ -147,12 +201,68 @@ export async function runToolLoop(
       return `mcp ${name} failed: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
+
+  async function runSkillCall(input: Record<string, unknown>): Promise<string> {
+    const name = input.name;
+    if (typeof name !== "string" || name === "") return "skill needs {name: string}";
+    if (opts.onSkill === undefined) return `skill unavailable: ${name} (no skills configured)`;
+    const body = await opts.onSkill(name);
+    return body ?? `unknown skill "${name}"`;
+  }
+
+  async function runWebfetchCall(input: Record<string, unknown>): Promise<string> {
+    const url = input.url;
+    if (typeof url !== "string" || url.trim() === "") return "webfetch needs {url: string}";
+    if (opts.onWebfetch === undefined)
+      return `webfetch unavailable: ${url} (no fetcher configured)`;
+    try {
+      return await opts.onWebfetch(url);
+    } catch (err) {
+      return `webfetch failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  async function runBrowseCall(input: Record<string, unknown>): Promise<string> {
+    const url = input.url;
+    if (typeof url !== "string" || url.trim() === "") return "browse needs {url: string}";
+    if (opts.onBrowse === undefined) return `browse unavailable: ${url} (no browser configured)`;
+    try {
+      return await opts.onBrowse(url);
+    } catch (err) {
+      return `browse failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  async function runMcpListCall(): Promise<string> {
+    if (opts.onListMcpTools === undefined) {
+      return "mcp unavailable (no MCP servers configured)";
+    }
+    try {
+      return await opts.onListMcpTools();
+    } catch (err) {
+      return `mcp inventory failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  async function runQuestionCall(input: Record<string, unknown>): Promise<string> {
+    const question = input.question;
+    if (typeof question !== "string" || question === "") {
+      return "question needs {question: string, options?: string[]}";
+    }
+    const options = Array.isArray(input.options)
+      ? input.options.filter((o): o is string => typeof o === "string")
+      : [];
+    if (opts.onQuestion === undefined) return "question unavailable (non-interactive session)";
+    try {
+      const answer = await opts.onQuestion(question, options);
+      return `user answered: ${answer}`;
+    } catch (err) {
+      return `question failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
 }
 
-async function runLocalTool(
-  tools: ToolsPort,
-  call: ToolCall,
-): Promise<{ ok: boolean; output: string }> {
+async function runLocalTool(tools: ToolsPort, call: ToolCall): Promise<ToolResult> {
   const s = (v: unknown): string => (typeof v === "string" ? v : "");
   switch (call.name) {
     case "read":
@@ -168,6 +278,21 @@ async function runLocalTool(
       );
     case "bash":
       return tools.bash(s(call.input.command));
+    case "screenshot":
+      return tools.screenshot();
+    case "click": {
+      const x = Number(call.input.x);
+      const y = Number(call.input.y);
+      const button = typeof call.input.button === "string" ? call.input.button : "left";
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return { ok: false, output: "click needs {x, y} numbers" };
+      }
+      return tools.click(x, y, button);
+    }
+    case "type":
+      return tools.type(s(call.input.text));
+    case "key":
+      return tools.key(s(call.input.name));
     case "glob":
       return tools.glob(s(call.input.pattern));
     case "grep":
@@ -176,6 +301,11 @@ async function runLocalTool(
         typeof call.input.include === "string" ? call.input.include : undefined,
       );
     case "task":
-      return { ok: false, output: "task is handled by the loop" };
+    case "skill":
+    case "question":
+    case "webfetch":
+    case "mcp":
+    case "browse":
+      return { ok: false, output: `${call.name} is handled by the loop` };
   }
 }

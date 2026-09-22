@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderDoctor } from "@/domain/doctor";
+import { renderDoctor } from "@/domain/doctor.js";
 
 describe("doctor", () => {
   it("renders rows and detects failures", () => {

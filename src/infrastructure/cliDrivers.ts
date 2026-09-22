@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import type { ChatMessage, QuotaInfo } from "@/domain/models";
-import type { Driver, SendResult } from "@/domain/drivers";
-import { AuthError, DriverError } from "@/lib/errors";
+import type { ChatMessage, QuotaInfo } from "@/domain/models.js";
+import type { Driver, SendResult } from "@/domain/drivers.js";
+import { AuthError, DriverError } from "@/lib/errors.js";
 
 export interface CliDriverDef {
   command: string;
@@ -13,7 +13,7 @@ export interface CliDriverDef {
   cliModel?: string;
 }
 
-const TEXT_KEYS = new Set(["text", "delta", "result", "output_text"]);
+const TEXT_KEYS = new Set(["text", "delta", "result", "output_text", "response"]);
 const SKIP_KEYS = new Set([
   "prompt",
   "command",
@@ -46,6 +46,49 @@ function collectText(value: unknown, skipKey = ""): string[] {
     return out;
   }
   return [];
+}
+
+export function extractCliText(stdout: string): string {
+  const parts: string[] = [];
+  let pending: string[] = [];
+  const flushDoc = (): void => {
+    if (pending.length === 0) return;
+    const doc = pending.join("\n");
+    pending = [];
+    try {
+      parts.push(...collectText(JSON.parse(doc) as unknown));
+    } catch {
+      for (const line of doc.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed !== "") parts.push(trimmed);
+      }
+    }
+  };
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    if (pending.length > 0 || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      pending.push(line);
+      if (pending.length > 200) {
+        flushDoc();
+        continue;
+      }
+      try {
+        parts.push(...collectText(JSON.parse(pending.join("\n")) as unknown));
+        pending = [];
+      } catch {
+        // keep accumulating: multi-line JSON document
+      }
+      continue;
+    }
+    parts.push(trimmed);
+  }
+  flushDoc();
+  const text = parts
+    .filter((p) => p !== "")
+    .join("\n")
+    .slice(0, 32000);
+  return text === "" ? stdout.slice(0, 32000) : text;
 }
 
 export function modelArgs(command: string, cliModel?: string): string[] {
@@ -236,6 +279,12 @@ export class CliDriver implements Driver {
     return last?.content ?? "";
   }
 
+  private imageNote(messages: ChatMessage[]): string {
+    const paths = messages.flatMap((m) => m.images ?? []);
+    if (paths.length === 0) return "";
+    return `\n[screenshots attached (${paths.join(", ")}) — this CLI cannot display images; continue without them]`;
+  }
+
   private run(
     prompt: string,
     onStdout: (chunk: string) => void,
@@ -280,38 +329,14 @@ export class CliDriver implements Driver {
     });
   }
 
-  private extract(stdout: string): string {
-    const parts: string[] = [];
-    for (const line of stdout.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (trimmed === "") continue;
-      if (trimmed.startsWith("{")) {
-        try {
-          const parsed = JSON.parse(trimmed) as unknown;
-          parts.push(...collectText(parsed));
-          continue;
-        } catch {
-          parts.push(trimmed);
-          continue;
-        }
-      }
-      parts.push(trimmed);
-    }
-    const text = parts
-      .filter((p) => p !== "")
-      .join("\n")
-      .slice(0, 32000);
-    return text === "" ? stdout.slice(0, 32000) : text;
-  }
-
   async sendMessage(messages: ChatMessage[]): Promise<SendResult> {
-    const prompt = this.lastUserText(messages);
+    const prompt = this.lastUserText(messages) + this.imageNote(messages);
     this.requireBinary();
     const { stdout, stderr, code } = await this.run(prompt, () => {});
     if (code !== 0 && stdout.trim() === "") {
       throw new DriverError(`${this.command} exited with code ${code}: ${stderr.slice(0, 500)}`);
     }
-    const text = this.extract(stdout);
+    const text = extractCliText(stdout);
     this.requests += 1;
     const usage = { input: this.countTokens(prompt), output: this.countTokens(text) };
     this.estimatedTokens += usage.input + usage.output;
@@ -322,7 +347,7 @@ export class CliDriver implements Driver {
     messages: ChatMessage[],
     onToken: (token: string) => void,
   ): Promise<SendResult> {
-    const prompt = this.lastUserText(messages);
+    const prompt = this.lastUserText(messages) + this.imageNote(messages);
     this.requireBinary();
     let buffer = "";
     const { stdout, stderr, code } = await this.run(prompt, (chunk) => {
@@ -343,7 +368,7 @@ export class CliDriver implements Driver {
     if (code !== 0 && stdout.trim() === "") {
       throw new DriverError(`${this.command} exited with code ${code}: ${stderr.slice(0, 500)}`);
     }
-    const text = this.extract(stdout);
+    const text = extractCliText(stdout);
     this.requests += 1;
     const usage = { input: this.countTokens(prompt), output: this.countTokens(text) };
     this.estimatedTokens += usage.input + usage.output;

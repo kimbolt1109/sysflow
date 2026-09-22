@@ -13,7 +13,7 @@ import {
   loadDiscoveryCache,
   mapAgyModel,
   saveDiscoveryCache,
-} from "@/infrastructure/discovery";
+} from "@/infrastructure/discovery.js";
 
 describe("cli probers", () => {
   it("parses opencode provider/model lines", () => {

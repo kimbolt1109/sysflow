@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ModelInfo, RoutingRule } from "@/domain/models";
-import { DEFAULT_THRESHOLDS, type BudgetThresholds } from "@/domain/quota";
+import type { ModelInfo, RoutingRule } from "@/domain/models.js";
+import { DEFAULT_THRESHOLDS, type BudgetThresholds } from "@/domain/quota.js";
 
 export interface FlowAuth {
   anthropic?: string;

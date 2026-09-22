@@ -3,15 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Checkpoint } from "@/domain/checkpoints";
-import { LocalTools } from "@/infrastructure/localTools";
+import type { Checkpoint } from "@/domain/checkpoints.js";
+import { LocalTools } from "@/infrastructure/localTools.js";
 import {
   checkpointDir,
   listCheckpoints,
   restoreCheckpoint,
   saveCheckpoint,
   snapshotCheckpoint,
-} from "@/infrastructure/checkpointStore";
+} from "@/infrastructure/checkpointStore.js";
 
 describe("checkpointStore", () => {
   let dir = "";

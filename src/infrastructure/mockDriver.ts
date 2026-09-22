@@ -1,5 +1,5 @@
-import type { ChatMessage, QuotaInfo } from "@/domain/models";
-import type { Driver, SendResult } from "@/domain/drivers";
+import type { ChatMessage, QuotaInfo } from "@/domain/models.js";
+import type { Driver, SendResult } from "@/domain/drivers.js";
 
 export class MockDriver implements Driver {
   readonly kind = "native" as const;

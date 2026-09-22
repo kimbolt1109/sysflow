@@ -3,14 +3,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverCommands } from "@/infrastructure/commandStore";
+import { discoverCommands } from "@/infrastructure/commandStore.js";
 import {
   findLegacyImport,
   loadMemoryFiles,
   writeProjectMemory,
-} from "@/infrastructure/memoryStore";
-import { discoverSkills, loadSkillBody } from "@/infrastructure/skillStore";
-import { discoverSubagents } from "@/infrastructure/subagentStore";
+} from "@/infrastructure/memoryStore.js";
+import { discoverSkills, loadSkillBody } from "@/infrastructure/skillStore.js";
+import { discoverSubagents } from "@/infrastructure/subagentStore.js";
 
 describe("extension stores", () => {
   let dir = "";
@@ -39,12 +39,12 @@ describe("extension stores", () => {
       "---\nname: a\ndescription: proj A\n---\nbody\n",
     );
 
-    const skills = discoverSkills(data, proj);
+    const skills = discoverSkills(data, proj, join(dir, "home"));
 
     expect(skills).toHaveLength(1);
     expect(skills[0]?.description).toBe("proj A");
-    expect(loadSkillBody(data, proj, "a")).toContain("body");
-    expect(loadSkillBody(data, proj, "missing")).toBeUndefined();
+    expect(loadSkillBody(data, proj, "a", join(dir, "home"))).toContain("body");
+    expect(loadSkillBody(data, proj, "missing", join(dir, "home"))).toBeUndefined();
   });
 
   it("discovers subagents and custom commands", () => {

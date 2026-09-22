@@ -1,4 +1,5 @@
-export type BoardPhase = "PLANNING" | "DEBATE" | "SYNTHESIS" | "EXECUTION" | "REVIEW" | "DONE";
+export type BoardPhase =
+  "PLANNING" | "DEBATE" | "SYNTHESIS" | "EXECUTION" | "VERIFY" | "REVIEW" | "DONE";
 
 export interface Critique {
   by: string;

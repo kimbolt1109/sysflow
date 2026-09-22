@@ -32,7 +32,14 @@ export function notify(title: string, body: string, opts: NotifyOptions = {}): v
           "-Command",
           `New-BurntToastNotification -Text '${title.replace(/'/g, "''")}', '${body.replace(/'/g, "''")}'`,
         ]);
+        return;
       }
+      run("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$mgr = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime]; $docType = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime]; $xml = $docType::new(); $xml.LoadXml('<toast><visual><binding template=''ToastText02''><text id=''1''>${escapeXml(title)}</text><text id=''2''>${escapeXml(body)}</text></binding></visual></toast>'); $mgr::CreateToastNotifier('Flow').Show($xml)`,
+      ]);
     } else if (process.platform === "darwin") {
       run("osascript", ["-e", `display notification "${body}" with title "${title}"`]);
     } else {
@@ -41,4 +48,13 @@ export function notify(title: string, body: string, opts: NotifyOptions = {}): v
   } catch {
     // notifications are best-effort and never fail the session
   }
+}
+
+export function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }

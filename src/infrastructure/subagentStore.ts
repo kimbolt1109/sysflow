@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseSubagentMd, type SubagentDef } from "@/domain/subagents";
+import { parseSubagentMd, type SubagentDef } from "@/domain/subagents.js";
 
 function discoverDir(dir: string): SubagentDef[] {
   if (!existsSync(dir)) return [];

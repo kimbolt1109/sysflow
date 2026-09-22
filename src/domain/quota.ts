@@ -1,5 +1,5 @@
-import type { ModelInfo, TokenUsage } from "@/domain/models";
-import { QuotaError } from "@/lib/errors";
+import type { ModelInfo, TokenUsage } from "@/domain/models.js";
+import { QuotaError } from "@/lib/errors.js";
 
 export interface BudgetThresholds {
   warn: number;

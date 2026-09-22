@@ -1,4 +1,4 @@
-import type { ModelInfo } from "@/domain/models";
+import type { ModelInfo } from "@/domain/models.js";
 
 export function listModels(models: ModelInfo[]): ModelInfo[] {
   return [...models];

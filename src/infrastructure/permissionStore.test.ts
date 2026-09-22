@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadPermissionRules, saveAlwaysAllow } from "@/infrastructure/permissionStore";
+import { loadPermissionRules, saveAlwaysAllow } from "@/infrastructure/permissionStore.js";
 
 describe("permissionStore", () => {
   let dir = "";

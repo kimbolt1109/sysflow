@@ -1,5 +1,5 @@
 import { emitKeypressEvents } from "node:readline";
-import type { ModelInfo } from "@/domain/models";
+import type { ModelInfo } from "@/domain/models.js";
 
 export interface PickerTheme {
   color: boolean;
@@ -56,6 +56,31 @@ export function flattenGroups(groups: Map<string, ModelInfo[]>): PickerItem[] {
   return items;
 }
 
+export function buildPickerItems(
+  models: ModelInfo[],
+  query: string,
+  recent: string[],
+): PickerItem[] {
+  const filtered = filterModels(models, query);
+  if (query.trim() !== "" || recent.length === 0) {
+    return flattenGroups(groupModels(filtered));
+  }
+  const byId = new Map(filtered.map((m) => [m.id, m]));
+  const seen = new Set<string>();
+  const out: PickerItem[] = [];
+  for (const id of recent) {
+    const found = byId.get(id);
+    if (found !== undefined && !seen.has(id)) {
+      seen.add(id);
+      out.push({ model: found, provider: "recent" });
+    }
+  }
+  for (const item of flattenGroups(groupModels(filtered))) {
+    if (!seen.has(item.model.id)) out.push(item);
+  }
+  return out;
+}
+
 export function filterModels(models: ModelInfo[], query: string): ModelInfo[] {
   const needle = query.trim().toLowerCase();
   if (needle === "") return models;
@@ -92,6 +117,21 @@ export function toggleGroup(selected: Set<string>, items: PickerItem[], provider
   }
 }
 
+export function shouldConfirmWithM(
+  keyName: string | undefined,
+  ctrl: boolean | undefined,
+  query: string,
+  selectedSize: number,
+): boolean {
+  return (
+    ctrl !== true &&
+    typeof keyName === "string" &&
+    keyName.toLowerCase() === "m" &&
+    query === "" &&
+    selectedSize > 0
+  );
+}
+
 export interface PickerRender {
   text: string;
   lines: number;
@@ -106,7 +146,9 @@ export function renderPicker(
   maxRows: number,
 ): PickerRender {
   const lines: string[] = [];
-  lines.push(`Select model${theme.color ? paint(theme, theme.dim, " ".repeat(50) + "esc") : ""}`);
+  lines.push(
+    `Select models${theme.color ? paint(theme, theme.dim, " ".repeat(50) + "m done · esc") : ""}`,
+  );
   lines.push(theme.color ? `> ${query}${paint(theme, theme.dim, "▌")}` : `> ${query}`);
   lines.push("");
   const rows = Math.max(5, maxRows);
@@ -135,8 +177,11 @@ export function renderPicker(
   }
   lines.push("");
   const footer =
-    `↑↓ move · Space toggle${query === "" ? " · a group" : ""} · Enter confirm · Esc cancel` +
-    (selected.size > 0 ? paint(theme, theme.dim, ` · ${selected.size} selected`) : "");
+    query === ""
+      ? `↑↓ move · Enter/Space toggle · a group · m done · Esc cancel` +
+        (selected.size > 0 ? paint(theme, theme.dim, ` · ${selected.size} selected`) : "")
+      : `↑↓ move · Enter/Space toggle · Esc clear` +
+        (selected.size > 0 ? paint(theme, theme.dim, ` · ${selected.size} selected`) : "");
   lines.push(theme.color ? paint(theme, theme.dim, footer) : footer);
   return { text: lines.join("\n"), lines: lines.length };
 }
@@ -145,6 +190,7 @@ export async function pickModels(
   models: ModelInfo[],
   theme: PickerTheme,
   maxRows: number,
+  recent: string[] = [],
 ): Promise<string[] | null> {
   const selected = new Set<string>();
   let query = "";
@@ -161,7 +207,7 @@ export async function pickModels(
   stdout.write("\x1b[?25l");
 
   const draw = (): void => {
-    items = flattenGroups(groupModels(filterModels(models, query)));
+    items = buildPickerItems(models, query, recent);
     cursor = items.length === 0 ? 0 : Math.min(cursor, items.length - 1);
     if (rendered !== undefined) {
       stdout.write(`\x1b[${rendered.lines}A`);
@@ -203,16 +249,10 @@ export async function pickModels(
             return;
           }
           case "return": {
-            if (items.length === 0) {
-              draw();
-              return;
-            }
-            if (selected.size === 0) {
-              const current = items[cursor];
-              if (current !== undefined) selected.add(current.model.id);
-            }
-            cleanup();
-            resolvePromise([...selected]);
+            const current = items[cursor];
+            if (current !== undefined) toggleSelected(selected, current.model.id);
+            cursor = moveCursor(cursor, 1, items.length);
+            draw();
             return;
           }
           case "escape":
@@ -237,6 +277,11 @@ export async function pickModels(
           const current = items[cursor];
           if (current !== undefined) toggleGroup(selected, items, current.provider);
           draw();
+          return;
+        }
+        if (shouldConfirmWithM(key?.name, key?.ctrl, query, selected.size)) {
+          cleanup();
+          resolvePromise([...selected]);
           return;
         }
         const char = typeof chunk === "string" && chunk.length === 1 ? chunk : key?.sequence;

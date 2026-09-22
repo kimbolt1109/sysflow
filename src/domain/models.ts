@@ -27,6 +27,8 @@ export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   name?: string;
+  /** local image file paths (e.g. screenshots) for vision-capable drivers */
+  images?: string[];
 }
 
 export interface TokenUsage {

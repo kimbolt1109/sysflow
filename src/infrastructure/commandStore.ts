@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CustomCommand } from "@/domain/commands";
-import { parseFrontmatter } from "@/domain/frontmatter";
+import type { CustomCommand } from "@/domain/commands.js";
+import { parseFrontmatter } from "@/domain/frontmatter.js";
 
 function discoverDir(dir: string): CustomCommand[] {
   if (!existsSync(dir)) return [];

@@ -1,14 +1,26 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import type { FlowApp } from "@/app";
-import { PICKER_PLAIN, PICKER_THEME, pickModels } from "@/api/modelPicker";
-import type { ModelInfo, OrchestrationMode } from "@/domain/models";
+import type { FlowApp } from "@/app.js";
+import { PICKER_PLAIN, PICKER_THEME, pickModels } from "@/api/modelPicker.js";
+import type { ModelInfo, OrchestrationMode } from "@/domain/models.js";
+import {
+  isThinkingLevel,
+  pushRecent,
+  THINKING_DESCRIPTIONS,
+  THINKING_LEVELS,
+  type ThinkingLevel,
+} from "@/domain/thinking.js";
 
 export interface Selection {
   models: string[];
   mode: OrchestrationMode;
   lead?: string;
+  thinking: ThinkingLevel;
+}
+
+export interface LoadedSelection extends Selection {
+  recent: string[];
 }
 
 export const MODE_DESCRIPTIONS: Record<OrchestrationMode, string> = {
@@ -37,22 +49,39 @@ function lastSelectionPath(app: FlowApp): string {
   return join(app.config.dataDir, "last.json");
 }
 
-export function loadLastSelection(app: FlowApp): Selection | undefined {
+export function loadLastSelection(
+  app: FlowApp,
+  knownIds?: Set<string>,
+): LoadedSelection | undefined {
   const path = lastSelectionPath(app);
   if (!existsSync(path)) return undefined;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<Selection>;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<Selection> & {
+      recent?: unknown;
+    };
     if (!Array.isArray(parsed.models) || parsed.models.length === 0) return undefined;
-    const known = new Set(app.config.models.map((m) => m.id));
+    const known = knownIds ?? new Set(app.config.models.map((m) => m.id));
     const models = parsed.models.filter((m): m is string => typeof m === "string" && known.has(m));
     if (models.length === 0) return undefined;
     const mode = MODES.includes(parsed.mode as OrchestrationMode)
       ? (parsed.mode as OrchestrationMode)
       : undefined;
+    const thinking =
+      typeof parsed.thinking === "string" && isThinkingLevel(parsed.thinking)
+        ? parsed.thinking
+        : "medium";
+    const recent = Array.isArray(parsed.recent)
+      ? pushRecent(
+          [],
+          parsed.recent.filter((m): m is string => typeof m === "string" && known.has(m)),
+        )
+      : [];
     return {
       models,
       mode: mode ?? (models.length > 1 ? "council" : "solo"),
       lead: typeof parsed.lead === "string" ? parsed.lead : undefined,
+      thinking,
+      recent,
     };
   } catch {
     return undefined;
@@ -61,7 +90,18 @@ export function loadLastSelection(app: FlowApp): Selection | undefined {
 
 export function saveLastSelection(app: FlowApp, selection: Selection): void {
   mkdirSync(app.config.dataDir, { recursive: true });
-  writeFileSync(lastSelectionPath(app), `${JSON.stringify(selection)}\n`, "utf8");
+  const recent = pushRecent(readRecentRaw(app), selection.models);
+  writeFileSync(lastSelectionPath(app), `${JSON.stringify({ ...selection, recent })}\n`, "utf8");
+}
+
+function readRecentRaw(app: FlowApp): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(lastSelectionPath(app), "utf8")) as { recent?: unknown };
+    if (!Array.isArray(parsed.recent)) return [];
+    return parsed.recent.filter((m): m is string => typeof m === "string");
+  } catch {
+    return [];
+  }
 }
 
 function printModels(models: ModelInfo[], quotas: Map<string, string>): void {
@@ -95,10 +135,11 @@ export async function runSelector(
   preselected?: string[],
   preMode?: OrchestrationMode,
 ): Promise<Selection> {
-  const last = loadLastSelection(app);
   const all = await app.refreshModels();
   process.stdout.write(`models: ${all.length} known (registry + discovered)\n`);
   const flat = all;
+  const flatIds = new Set(flat.map((m) => m.id));
+  const last = loadLastSelection(app, flatIds);
   const quotas = new Map<string, string>();
   await Promise.all(
     flat.map(async (m) => {
@@ -122,10 +163,14 @@ export async function runSelector(
     models = preselected;
   } else if (process.stdin.isTTY === true && process.stdout.isTTY === true) {
     const theme = app.config.noColor ? PICKER_PLAIN : PICKER_THEME;
-    const picked = await pickModels(flat, theme, Math.max(5, (process.stdout.rows ?? 24) - 12));
+    const picked = await pickModels(
+      flat,
+      theme,
+      Math.max(5, (process.stdout.rows ?? 24) - 12),
+      last?.recent ?? [],
+    );
     if (picked === null) {
-      const knownIds = new Set(flat.map((m) => m.id));
-      const remembered = (last?.models ?? []).filter((id) => knownIds.has(id));
+      const remembered = last?.models ?? [];
       models = remembered.length > 0 ? remembered : [(flat[0] as ModelInfo).id];
     } else {
       models = picked;
@@ -134,8 +179,7 @@ export async function runSelector(
   } else {
     printModels(flat, quotas);
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const knownIds = new Set(flat.map((m) => m.id));
-    const remembered = (last?.models ?? []).filter((id) => knownIds.has(id));
+    const remembered = last?.models ?? [];
     const def = remembered.length > 0 ? remembered.join(",") : "1";
     const answer = await question(rl, `Toggle models by number, comma-separated [${def}]: `);
     rl.close();
@@ -151,6 +195,23 @@ export async function runSelector(
       if (models.length === 0) throw new Error("no known models selected");
     }
     if (models.length === 0) models = [(flat[0] as ModelInfo).id];
+  }
+
+  let thinking: ThinkingLevel = last?.thinking ?? "medium";
+  if (process.stdin.isTTY) {
+    process.stdout.write("\nThinking levels:\n");
+    for (const t of THINKING_LEVELS) {
+      process.stdout.write(`  ${t} — ${THINKING_DESCRIPTIONS[t]}\n`);
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await question(rl, `Thinking [${thinking}]: `);
+    rl.close();
+    if (answer !== "") {
+      if (!isThinkingLevel(answer)) {
+        throw new Error(`unknown thinking level "${answer}"`);
+      }
+      thinking = answer;
+    }
   }
 
   let mode = preMode ?? (models.length > 1 ? "council" : "solo");
@@ -178,7 +239,7 @@ export async function runSelector(
     if (answer !== "") lead = answer;
   }
 
-  const selection: Selection = { models, mode, lead };
+  const selection: Selection = { models, mode, lead, thinking };
   saveLastSelection(app, selection);
   return selection;
 }

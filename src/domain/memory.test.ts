@@ -4,7 +4,7 @@ import {
   expandAtFiles,
   legacyMemoryCandidates,
   memoryPaths,
-} from "@/domain/memory";
+} from "@/domain/memory.js";
 
 describe("memory", () => {
   it("resolves the FLOW.md hierarchy", () => {

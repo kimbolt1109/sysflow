@@ -1,5 +1,5 @@
-import type { OrchestrationMode } from "@/domain/models";
-import type { PermissionMode } from "@/domain/permissions";
+import type { OrchestrationMode } from "@/domain/models.js";
+import type { PermissionMode } from "@/domain/permissions.js";
 
 export type CliCommand =
   | "repl"
@@ -10,6 +10,7 @@ export type CliCommand =
   | "mcp"
   | "config"
   | "update"
+  | "tui"
   | "help"
   | "version";
 
@@ -137,7 +138,13 @@ export function parseArgv(argv: string[]): CliArgs {
   }
   if (positional !== undefined && positional.length > 0) {
     const [head, ...tail] = positional as [string, ...string[]];
-    if (head === "models" || head === "doctor" || head === "sessions" || head === "update") {
+    if (
+      head === "models" ||
+      head === "doctor" ||
+      head === "sessions" ||
+      head === "update" ||
+      head === "tui"
+    ) {
       args.command = head;
       args.rest.push(...tail);
     } else if (head === "mcp" || head === "config") {
@@ -163,6 +170,7 @@ export function helpText(): string {
     "  flow sessions                 session browser",
     '  flow -p "task" [--agents a,b] [--mode council] [--output-format json|stream-json]',
     "  flow models                   list models",
+    "  flow tui                      full-screen terminal UI",
     "  flow doctor | flow mcp ... | flow config ... | flow update",
     "",
     "Flags: -y/--dangerously-skip-permissions, --permission-mode, --model(s),",

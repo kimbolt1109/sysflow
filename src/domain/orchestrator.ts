@@ -7,8 +7,8 @@ import {
   setPlan,
   type Blackboard,
   type BoardPhase,
-} from "@/domain/blackboard";
-import type { OrchestrationMode } from "@/domain/models";
+} from "@/domain/blackboard.js";
+import type { OrchestrationMode } from "@/domain/models.js";
 
 export interface PlanDraft {
   agent: string;
@@ -18,6 +18,30 @@ export interface PlanDraft {
 export interface Review {
   approved: boolean;
   notes: string;
+}
+
+export type VerifyLens = "correctness" | "edge-cases" | "requirements" | "security" | "simplicity";
+
+export const VERIFY_LENSES: VerifyLens[] = [
+  "correctness",
+  "edge-cases",
+  "requirements",
+  "security",
+  "simplicity",
+];
+
+export interface VerifyVerdict {
+  /** 0–100, benchmark style: percent of the lens rubric satisfied. */
+  score: number;
+  passed: boolean;
+  notes: string;
+  /** Evidence behind the score, e.g. "unit tests: 12/12 pass". */
+  checks: string[];
+}
+
+export interface VerifySummary extends VerifyVerdict {
+  agent: string;
+  lens: VerifyLens;
 }
 
 export interface ExecuteOutcome {
@@ -34,6 +58,7 @@ export interface Orchestrant {
   ): Promise<Record<string, { score: number; note: string }>>;
   synthesize(task: string, drafts: PlanDraft[], notes: string[]): Promise<string>;
   execute(plan: string): Promise<ExecuteOutcome>;
+  verify?(plan: string, outcome: ExecuteOutcome, lens: VerifyLens): Promise<VerifyVerdict>;
   review(plan: string, outcome: ExecuteOutcome): Promise<Review>;
   retro(): Promise<string>;
 }
@@ -58,28 +83,52 @@ export interface CouncilResult {
   lead: string;
   plan: string;
   outcome: ExecuteOutcome;
+  verify: VerifySummary[];
   retros: Record<string, string>;
   phases: BoardPhase[];
   pausedForUser: boolean;
+  pauseReason?: string;
+}
+
+export const VERIFY_MIN_AVG = 70;
+
+function clampPercent(score: number): number {
+  if (!Number.isFinite(score)) return 50;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+export interface CouncilPlan {
+  live: Orchestrant[];
+  board: Blackboard;
+  lead: string;
+  plan: string;
+  phases: BoardPhase[];
 }
 
 function isActive(opts: CouncilOptions, name: string): boolean {
   return opts.active === undefined || opts.active(name);
 }
 
-export async function runCouncil(
+function trackEmits(
+  opts: CouncilOptions,
+  phases: BoardPhase[],
+): (phase: BoardPhase, message: string, agent?: string) => void {
+  return (phase, message, agent) => {
+    phases.push(phase);
+    opts.emit?.({ phase, message, agent });
+  };
+}
+
+export async function planCouncil(
   agents: Orchestrant[],
   task: string,
   opts: CouncilOptions = {},
-): Promise<CouncilResult> {
+): Promise<CouncilPlan> {
   const live = agents.filter((a) => isActive(opts, a.name));
   if (live.length === 0) throw new Error("council needs at least one active agent");
   const board = emptyBlackboard(task);
   const phases: BoardPhase[] = [];
-  const emit = (phase: BoardPhase, message: string, agent?: string): void => {
-    phases.push(phase);
-    opts.emit?.({ phase, message, agent });
-  };
+  const emit = trackEmits(opts, phases);
 
   setPhase(board, "PLANNING");
   emit("PLANNING", `fan-out to ${live.length} agents`);
@@ -131,12 +180,67 @@ export async function runCouncil(
     }`,
   );
   emit("SYNTHESIS", "merged final plan", lead);
+  return { live, board, lead, plan, phases };
+}
+
+export async function finishCouncil(
+  staged: CouncilPlan,
+  opts: CouncilOptions = {},
+): Promise<CouncilResult> {
+  const { live, board, lead, plan } = staged;
+  const phases = staged.phases;
+  const emit = trackEmits(opts, phases);
+  if (live.length === 0) throw new Error("council needs at least one active agent");
 
   setPhase(board, "EXECUTION");
   emit("EXECUTION", "executing with tools", lead);
   const executor = live.find((a) => a.name === lead);
   if (executor === undefined) throw new Error(`lead ${lead} left the council`);
   const outcome = await executor.execute(plan);
+
+  setPhase(board, "VERIFY");
+  const verify: VerifySummary[] = [];
+  await Promise.all(
+    live.map(async (agent, index) => {
+      if (agent.verify === undefined) return;
+      const lens = VERIFY_LENSES[index % VERIFY_LENSES.length] as VerifyLens;
+      const verdict = await agent.verify(plan, outcome, lens);
+      const score = clampPercent(verdict.score);
+      const checks = verdict.checks.filter((c) => typeof c === "string");
+      verify.push({
+        agent: agent.name,
+        lens,
+        score,
+        passed: verdict.passed,
+        notes: verdict.notes,
+        checks,
+      });
+      logDecision(board, `verify ${agent.name} (${lens}) ${score}%: ${verdict.notes}`);
+      emit("VERIFY", `scored ${score}% from the ${lens} perspective`, agent.name);
+    }),
+  );
+  verify.sort((a, b) => (a.agent < b.agent ? -1 : 1));
+  if (verify.length > 0) {
+    const avg = verify.reduce((sum, v) => sum + v.score, 0) / verify.length;
+    const failed = verify.filter((v) => !v.passed);
+    if (avg < VERIFY_MIN_AVG || failed.length > 0) {
+      const reason =
+        failed.length > 0
+          ? `verification failed: ${failed.map((v) => `${v.agent} (${v.lens}): ${v.notes}`).join("; ")}`
+          : `verification scored ${avg.toFixed(0)}% on average (needs ${VERIFY_MIN_AVG}%)`;
+      return {
+        board,
+        lead,
+        plan,
+        outcome,
+        verify,
+        retros: {},
+        phases,
+        pausedForUser: true,
+        pauseReason: reason,
+      };
+    }
+  }
 
   setPhase(board, "REVIEW");
   const reviewers = live.filter((a) => a.name !== lead);
@@ -149,7 +253,17 @@ export async function runCouncil(
       rejections += 1;
       logDecision(board, `rejection by ${reviewer.name}: ${verdict.notes}`);
       if (rejections >= maxRejections) {
-        return { board, lead, plan, outcome, retros: {}, phases, pausedForUser: true };
+        return {
+          board,
+          lead,
+          plan,
+          outcome,
+          verify,
+          retros: {},
+          phases,
+          pausedForUser: true,
+          pauseReason: `paused: ${rejections} reviewers rejected — lead ${lead} awaits your call (/promote, /handoff, or new instructions)`,
+        };
       }
     }
   }
@@ -160,7 +274,16 @@ export async function runCouncil(
     retros[agent.name] = await agent.retro();
     emit("DONE", "summarized its contribution", agent.name);
   }
-  return { board, lead, plan, outcome, retros, phases, pausedForUser: false };
+  return { board, lead, plan, outcome, verify, retros, phases, pausedForUser: false };
+}
+
+export async function runCouncil(
+  agents: Orchestrant[],
+  task: string,
+  opts: CouncilOptions = {},
+): Promise<CouncilResult> {
+  const staged = await planCouncil(agents, task, opts);
+  return finishCouncil(staged, opts);
 }
 
 export async function runRelay(

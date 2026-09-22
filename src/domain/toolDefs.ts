@@ -1,8 +1,25 @@
-export type ToolName = "read" | "write" | "edit" | "bash" | "glob" | "grep" | "task";
+export type ToolName =
+  | "read"
+  | "write"
+  | "edit"
+  | "bash"
+  | "glob"
+  | "grep"
+  | "task"
+  | "skill"
+  | "question"
+  | "webfetch"
+  | "mcp"
+  | "browse"
+  | "screenshot"
+  | "click"
+  | "type"
+  | "key";
 
 export interface ToolResult {
   ok: boolean;
   output: string;
+  images?: string[];
 }
 
 export interface ToolsPort {
@@ -20,6 +37,10 @@ export interface ToolsPort {
   bash(command: string, timeoutMs?: number): Promise<ToolResult>;
   glob(pattern: string): Promise<ToolResult>;
   grep(pattern: string, include?: string): Promise<ToolResult>;
+  screenshot(): Promise<ToolResult>;
+  click(x: number, y: number, button?: string): Promise<ToolResult>;
+  type(text: string): Promise<ToolResult>;
+  key(name: string): Promise<ToolResult>;
 }
 
 export interface ToolCall {
@@ -38,7 +59,16 @@ export function parseToolCall(value: unknown): ToolCall | undefined {
     name !== "bash" &&
     name !== "glob" &&
     name !== "grep" &&
-    name !== "task"
+    name !== "task" &&
+    name !== "skill" &&
+    name !== "question" &&
+    name !== "webfetch" &&
+    name !== "mcp" &&
+    name !== "browse" &&
+    name !== "screenshot" &&
+    name !== "click" &&
+    name !== "type" &&
+    name !== "key"
   ) {
     return undefined;
   }
@@ -55,4 +85,13 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   glob: "Find files matching a pattern (*, **, ?).",
   grep: "Search file contents with a regex.",
   task: "Spawn a subagent: {subagent_type, prompt}.",
+  skill: "Load a skill body: {name} — load first, then follow it.",
+  question: "Ask the user: {question, options?: string[]} — use when blocked on a choice.",
+  webfetch: "Fetch a URL as text: {url} — research docs, issues, and references.",
+  mcp: "List available MCP tools, then call one as mcp__server__tool.",
+  browse: "Open a URL in the real browser: {url} — then screenshot and walk the flow.",
+  screenshot: "Capture the screen to a PNG and see it on the next turn.",
+  click: "Click at screen pixels: {x, y, button?: left|right|middle}.",
+  type: "Type text into the focused window: {text}.",
+  key: "Press a key: {name} (Enter, Tab, Esc, arrows, F1–F12, …).",
 };

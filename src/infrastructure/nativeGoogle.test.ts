@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { GoogleDriver } from "@/infrastructure/nativeGoogle";
-import { AuthError } from "@/lib/errors";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { GoogleDriver } from "@/infrastructure/nativeGoogle.js";
+import { AuthError } from "@/lib/errors.js";
 
 describe("GoogleDriver", () => {
   it("sends generateContent and returns text plus usage", async () => {
@@ -31,6 +34,31 @@ describe("GoogleDriver", () => {
     await expect(driver.sendMessage([{ role: "user", content: "hi" }])).rejects.toBeInstanceOf(
       AuthError,
     );
+  });
+
+  it("sends screenshots as inlineData parts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "flow-shot-"));
+    try {
+      const path = join(dir, "shot.png");
+      writeFileSync(path, Buffer.from("fakepng"));
+      const fetchFn = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ candidates: [{ content: { parts: [{ text: "seen" }] } }] }),
+            { status: 200 },
+          ),
+      );
+      const driver = new GoogleDriver({ apiKey: "k", model: "google/gemini-pro", fetchFn });
+
+      await driver.sendMessage([{ role: "user", content: "look", images: [path] }]);
+
+      const call = fetchFn.mock.calls[0] as [string, RequestInit] | undefined;
+      const body = String((call as [string, RequestInit])[1].body);
+      expect(body).toContain("inlineData");
+      expect(body).toContain(Buffer.from("fakepng").toString("base64"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("streams SSE parts to onToken", async () => {

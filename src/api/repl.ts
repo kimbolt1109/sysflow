@@ -1,25 +1,30 @@
 ﻿import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
-import type { FlowApp } from "@/app";
-import { helpText } from "@/api/cli";
-import { describeConfig } from "@/api/configView";
-import { CouncilSession } from "@/api/council";
-import { renderCost, renderStatus } from "@/api/costView";
-import { runDoctor } from "@/api/doctor";
-import { badgeWith, THEMES, type Theme } from "@/api/theming";
-import type { ChatMessage, OrchestrationMode } from "@/domain/models";
-import { findCommand, substituteArgs } from "@/domain/commands";
-import { compactHistory } from "@/domain/compaction";
-import { describeCheckpoint } from "@/domain/checkpoints";
-import { findModel } from "@/domain/modelRegistry";
-import type { Orchestrant } from "@/domain/orchestrator";
-import { parseRule } from "@/domain/permissions";
-import type { PermissionMode, PermissionRule } from "@/domain/permissions";
-import { sessionPreview } from "@/domain/sessions";
-import { skillListing } from "@/domain/skills";
-import { subagentListing } from "@/domain/subagents";
-import { buildContextUsage, renderContextBars } from "@/domain/tokenizer";
-import { runReadTool, runWriteTool } from "@/api/toolCommands";
+import type { FlowApp } from "@/app.js";
+import { helpText } from "@/api/cli.js";
+import { describeConfig } from "@/api/configView.js";
+import { CouncilSession } from "@/api/council.js";
+import { renderCost, renderStatus } from "@/api/costView.js";
+import { runDoctor } from "@/api/doctor.js";
+import { badgeWith, THEMES, type Theme } from "@/api/theming.js";
+import type { ChatMessage, OrchestrationMode } from "@/domain/models.js";
+import { thinkingDirective, type ThinkingLevel } from "@/domain/thinking.js";
+import { findCommand, substituteArgs } from "@/domain/commands.js";
+import { compactHistory } from "@/domain/compaction.js";
+import { describeCheckpoint } from "@/domain/checkpoints.js";
+import { findModel } from "@/domain/modelRegistry.js";
+import type { Orchestrant } from "@/domain/orchestrator.js";
+import { checkPermission, parseRule } from "@/domain/permissions.js";
+import type { PermissionMode, PermissionRule } from "@/domain/permissions.js";
+import { formatMcpInventory } from "@/domain/mcp.js";
+import { sessionPreview } from "@/domain/sessions.js";
+import { skillListing } from "@/domain/skills.js";
+import { subagentListing } from "@/domain/subagents.js";
+import { buildContextUsage, renderContextBars } from "@/domain/tokenizer.js";
+import { runReadTool, runWriteTool } from "@/api/toolCommands.js";
+import { runToolLoop, TOOL_SYSTEM } from "@/infrastructure/agentLoop.js";
+import { fetchPageText } from "@/lib/webfetch.js";
+import { openBrowser } from "@/lib/browser.js";
 
 export interface ReplOptions {
   resume?: string;
@@ -29,10 +34,13 @@ export interface ReplOptions {
   agents?: Orchestrant[];
   councilMode?: OrchestrationMode;
   councilLead?: string;
+  thinking?: ThinkingLevel;
   editor?: string;
   theme?: Theme;
   color?: boolean;
   notify?: boolean;
+  /** past council lessons from the composition root ("" / undefined when none) */
+  lessons?: string;
 }
 
 export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number> {
@@ -42,6 +50,13 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
   const rules = app.rules;
   let sessionId = resolveSession(app, opts);
   const history: ChatMessage[] = loadHistory(app, sessionId);
+  if (opts.thinking !== undefined) {
+    const lessons = opts.lessons ?? "";
+    history.push({
+      role: "system",
+      content: thinkingDirective(opts.thinking) + (lessons === "" ? "" : `\n\n${lessons}`),
+    });
+  }
   const costs = { session: 0 };
   let theme = opts.theme ?? (THEMES[0] as Theme);
   const color = opts.color ?? true;
@@ -80,6 +95,9 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
   process.stdout.write(
     `flow · ${app.driver.id} · session ${sessionId.slice(0, 8)} · /help for commands\n`,
   );
+  if (opts.dangerouslySkip) {
+    process.stdout.write("YOLO: dangerously skipping permissions — every tool auto-approved.\n");
+  }
   if (council !== undefined) {
     process.stdout.write(
       `council: ${council.names().join(", ")} · mode=${council.mode} · Esc interjects, @agent DMs\n`,
@@ -90,10 +108,36 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
     app.markImportOffered();
   }
   await app.hooks.fire("SessionStart", { session_id: sessionId, model: app.driver.id });
+  const pendingQuestions: Array<{
+    question: string;
+    options: string[];
+    resolve: (answer: string) => void;
+  }> = [];
+  app.askUser = (question, options) => {
+    app.notifyUser("Flow needs your input", question.slice(0, 120));
+    return new Promise<string>((resolve) => {
+      pendingQuestions.push({ question, options, resolve });
+      process.stdout.write(
+        `\n[agent question] ${question}\n${options.map((o, i) => `  ${i + 1}. ${o}`).join("\n")}${options.length > 0 ? "\n" : ""}(reply with the number or text)\n`,
+      );
+      rl.prompt();
+    });
+  };
   rl.prompt();
   for await (const line of rl) {
     const input = line.trim();
     if (input === "") {
+      rl.prompt();
+      continue;
+    }
+    const pending = pendingQuestions.shift();
+    if (pending !== undefined) {
+      const n = Number(input);
+      pending.resolve(
+        pending.options.length > 0 && Number.isInteger(n) && n >= 1 && n <= pending.options.length
+          ? (pending.options[n - 1] as string)
+          : input,
+      );
       rl.prompt();
       continue;
     }
@@ -127,7 +171,18 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
       continue;
     }
     if (input.startsWith("/")) {
-      const done = await runSlash(app, rl, sessionId, history, mode, rules, council, input, opts);
+      const done = await runSlash(
+        app,
+        rl,
+        sessionId,
+        history,
+        mode,
+        rules,
+        council,
+        input,
+        opts,
+        costs,
+      );
       if (done === "exit") {
         rl.close();
         await app.hooks.fire("SessionEnd", { session_id: sessionId });
@@ -157,11 +212,39 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
     app.sessions.append(sessionId, { type: "user", text: input });
     try {
       let text = "";
-      await app.driver.streamMessage(history, (token) => {
-        if (stopCurrent) return;
-        text += token;
-        process.stdout.write(token);
+      const loop = await runToolLoop(app.driver, app.tools, TOOL_SYSTEM, input, {
+        seed: history.slice(0, -1),
+        maxTurns: 12,
+        check: (tool, toolInput) => checkPermission(mode, rules, tool, toolInput),
+        emit: (token) => {
+          if (stopCurrent) return;
+          text += token;
+          process.stdout.write(token);
+        },
+        hooks: {
+          before: (name, toolInput) =>
+            app.hooks.fire("PreToolUse", { tool_name: name, tool_input: toolInput }),
+          after: (name, toolInput, output) =>
+            app.hooks
+              .fire("PostToolUse", {
+                tool_name: name,
+                tool_input: toolInput,
+                output: output.slice(0, 2000),
+              })
+              .then(() => undefined),
+        },
+        onSkill: (name) => {
+          const skill = app.skills.find((s) => s.name === name);
+          if (skill?.disableModelInvocation === true) return undefined;
+          return app.skillBody(name);
+        },
+        onQuestion: app.askUser,
+        onWebfetch: (url) => fetchPageText(url),
+        onBrowse: (url) => openBrowser(url),
+        onListMcpTools: async () => formatMcpInventory(await app.mcp.toolInventory()),
+        onMcpTool: (toolName, args) => app.mcp.call(toolName, args),
       });
+      text = loop.answer;
       process.stdout.write("\n");
       if (stopCurrent) {
         app.sessions.append(sessionId, { type: "interrupted" });
@@ -176,6 +259,7 @@ export async function startRepl(app: FlowApp, opts: ReplOptions): Promise<number
           historyTokens(text),
         );
         costs.session += used.cost;
+        if (notify) app.notifyUser("Flow task complete", text.slice(0, 120));
         if (used.level !== "ok" && notify) {
           app.notifyUser(
             "Flow budget",
@@ -243,6 +327,33 @@ async function runCouncilTurn(
     if (await maybeCompact(app, sessionId, history)) {
       process.stdout.write("[auto-compact: transcript summarized, recent window kept]\n");
     }
+  } catch (err) {
+    process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+    app.sessions.append(sessionId, { type: "error", message: String(err) });
+  }
+}
+
+async function runApproveTurn(
+  app: FlowApp,
+  council: CouncilSession,
+  sessionId: string,
+  history: ChatMessage[],
+  costs: { session: number },
+  notify: boolean,
+): Promise<void> {
+  try {
+    const run = await council.approve((line) => process.stdout.write(`${line}\n`));
+    if (run === undefined) {
+      process.stdout.write("no pending plan — send a task first with /plan on.\n");
+      return;
+    }
+    process.stdout.write(`${run.text}\n`);
+    history.push({ role: "assistant", content: run.text });
+    app.sessions.append(sessionId, { type: "assistant", text: run.text });
+    const used = app.recordUsage("council", "", historyTokens("/approve"), historyTokens(run.text));
+    costs.session += used.cost;
+    if (notify) app.notifyUser("Flow task complete", run.text.slice(0, 120));
+    await app.hooks.fire("Notification", { session_id: sessionId, kind: "task-complete" });
   } catch (err) {
     process.stdout.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
     app.sessions.append(sessionId, { type: "error", message: String(err) });
@@ -353,6 +464,7 @@ async function runSlash(
   council: CouncilSession | undefined,
   input: string,
   opts: ReplOptions,
+  costs: { session: number },
 ): Promise<"exit" | "continue"> {
   const [cmd, ...rest] = input.slice(1).split(/\s+/);
   const arg = rest.join(" ").trim();
@@ -362,7 +474,7 @@ async function runSlash(
       return "exit";
     case "help":
       process.stdout.write(
-        `${helpText()}\n\nREPL: /clear /context /compact [focus] /model /models /permissions /sessions /resume /doctor /skills /memory /init /mcp /agents /config /review /add-dir plus /read /write /edit /bash /glob /grep\n`,
+        `${helpText()}\n\nREPL: /clear /context /compact [focus] /model /models /permissions /sessions /resume /doctor /skills /memory /init /mcp /agents /plan /approve /config /review /add-dir plus /read /write /edit /bash /glob /grep\n`,
       );
       return "continue";
     case "context": {
@@ -651,6 +763,7 @@ async function runSlash(
     case "handoff":
     case "mode":
     case "round":
+    case "plan":
     case "stop-agent":
       if (council === undefined) {
         process.stdout.write(`/${cmd} needs a council — start with --agents a,b.\n`);
@@ -658,6 +771,14 @@ async function runSlash(
       }
       process.stdout.write(`${council.interject(cmd, arg)}\n`);
       return "continue";
+    case "approve": {
+      if (council === undefined) {
+        process.stdout.write("/approve needs a council — start with --agents a,b.\n");
+        return "continue";
+      }
+      await runApproveTurn(app, council, sessionId, history, costs, opts.notify ?? true);
+      return "continue";
+    }
     case "read":
     case "glob":
     case "grep":

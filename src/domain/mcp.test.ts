@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mcpToolName, parseMcpConfig, parseMcpToolName } from "@/domain/mcp";
+import { formatMcpInventory, mcpToolName, parseMcpConfig, parseMcpToolName } from "@/domain/mcp.js";
 
 describe("mcp", () => {
   it("namespaces tools as mcp__server__tool", () => {
@@ -20,5 +20,13 @@ describe("mcp", () => {
 
     expect(defs.map((d) => d.name).sort()).toEqual(["fs", "web"]);
     expect(defs.find((d) => d.name === "fs")?.args).toEqual(["--root", "."]);
+  });
+
+  it("formats inventory for agent discovery", () => {
+    expect(formatMcpInventory([])).toContain("no MCP tools");
+    const out = formatMcpInventory([
+      { server: "fs", tool: "read", namespaced: "mcp__fs__read", description: "read a file" },
+    ]);
+    expect(out).toContain("mcp__fs__read: read a file");
   });
 });
