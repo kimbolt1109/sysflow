@@ -1,4 +1,4 @@
-import type { Driver, SendResult } from "@/domain/drivers.js";
+import type { Driver, SendOptions, SendResult } from "@/domain/drivers.js";
 import type { ChatMessage, QuotaInfo } from "@/domain/models.js";
 import { backoffDelay } from "@/domain/quota.js";
 import { QuotaError } from "@/lib/errors.js";
@@ -81,16 +81,24 @@ export class RetryDriver implements Driver {
     return this.inner.healthCheck();
   }
 
-  sendMessage(messages: ChatMessage[]): Promise<SendResult> {
-    return this.run((driver) => driver.sendMessage(messages));
+  sendMessage(messages: ChatMessage[], opts?: SendOptions): Promise<SendResult> {
+    return this.run((driver) => driver.sendMessage(messages, opts));
   }
 
-  streamMessage(messages: ChatMessage[], onToken: (token: string) => void): Promise<SendResult> {
+  streamMessage(
+    messages: ChatMessage[],
+    onToken: (token: string) => void,
+    opts?: SendOptions,
+  ): Promise<SendResult> {
     return this.run((driver) =>
-      driver.streamMessage(messages, (token) => {
-        this.started = true;
-        onToken(token);
-      }),
+      driver.streamMessage(
+        messages,
+        (token) => {
+          this.started = true;
+          onToken(token);
+        },
+        opts,
+      ),
     );
   }
 

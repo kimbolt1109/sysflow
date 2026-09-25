@@ -635,10 +635,13 @@ async function runSlash(
         process.stdout.write(`review needs a git repo: ${diff.output.slice(0, 200)}\n`);
         return "continue";
       }
-      const verdict = await app.driver.sendMessage([
-        { role: "system", content: "Review this diff for bugs and quality. Be concise." },
-        { role: "user", content: diff.output },
-      ]);
+      const verdict = await app.driver.sendMessage(
+        [
+          { role: "system", content: "Review this diff for bugs and quality. Be concise." },
+          { role: "user", content: diff.output },
+        ],
+        { readOnly: true },
+      );
       process.stdout.write(`${verdict.text}\n`);
       return "continue";
     }

@@ -13,12 +13,18 @@ import {
   moveLineEnd,
   moveLineStart,
   moveLineVertical,
+  pastedText,
   type PromptEdit,
 } from "@/api/tui/promptState.js";
 
 const edit = (value: string, cursor: number): PromptEdit => ({ value, cursor });
 
 describe("promptState", () => {
+  it("normalizes pasted line endings and drops stray control bytes", () => {
+    expect(pastedText("a\r\nb\rc\nd")).toBe("a\nb\nc\nd");
+    expect(pastedText("x\u0007y\tz\u001b")).toBe("xy\tz");
+  });
+
   it("inserts and clamps the caret", () => {
     expect(insertText(edit("", 0), "hi")).toEqual({ value: "hi", cursor: 2 });
     expect(insertText(edit("ab", 1), "X")).toEqual({ value: "aXb", cursor: 2 });

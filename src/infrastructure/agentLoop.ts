@@ -85,8 +85,12 @@ export async function runToolLoop(
     maxTurns?: number;
     /** prior turns replayed between system and task (solo continuity) */
     seed?: ChatMessage[];
+    /** tell the driver this loop must not mutate: CLI agents drop their auto-approve flags */
+    readOnly?: boolean;
     check?: ToolCheck;
     emit?: (text: string) => void;
+    /** fires after each tool call with its (capped) output, e.g. to show a tool line */
+    onTool?: (name: string, input: Record<string, unknown>, output: string) => void;
     hooks?: LoopHooks;
     onTask?: (subagent: string, prompt: string) => Promise<string>;
     onSkill?: (name: string) => Promise<string | undefined> | string | undefined;
@@ -112,12 +116,19 @@ export async function runToolLoop(
   for (let turn = 0; turn < maxTurns; turn += 1) {
     turns = turn + 1;
     let text = "";
-    const streamed = await driver.streamMessage(transcript, (token) => {
-      text += token;
-      opts.emit?.(token);
-    });
+    const streamed = await driver.streamMessage(
+      transcript,
+      (token) => {
+        text += token;
+        opts.emit?.(token);
+      },
+      opts.readOnly === true ? { readOnly: true } : undefined,
+    );
     usage.input += streamed.usage.input;
     usage.output += streamed.usage.output;
+    // The driver's final text wins: CLI agents stream intermediate steps (or nothing at all)
+    // and only report the finished answer once the run ends.
+    if (streamed.text !== "") text = streamed.text;
     transcript.push({ role: "assistant", content: text });
     const calls = parseToolFences(text);
     if (calls.length === 0) {
@@ -127,6 +138,7 @@ export async function runToolLoop(
     answer = text;
     for (const call of calls) {
       const out = await runLoopCall(call);
+      opts.onTool?.(call.name, call.input, out.text);
       transcript.push({
         role: "tool",
         name: call.name,

@@ -22,7 +22,7 @@ import { matchRouting } from "@/domain/routing.js";
 import { sessionPreview } from "@/domain/sessions.js";
 import type { ThinkingLevel } from "@/domain/thinking.js";
 import type { ToolCheck } from "@/infrastructure/agentLoop.js";
-import { findOnPath, passthrough } from "@/infrastructure/cliDrivers.js";
+import { findOnPath, passthrough } from "@/infrastructure/cliLaunch.js";
 import { HookRunner, loadProjectHooks, loadUserHooks } from "@/infrastructure/hookRunner.js";
 import {
   loadProjectMcpDefs,
@@ -151,15 +151,27 @@ async function main(): Promise<number> {
       const permission: { current: PermissionMode } = {
         current: args.permissionMode ?? "default",
       };
+      const initialModels =
+        args.model !== undefined || args.agents.length > 0
+          ? [...new Set([args.model, ...args.agents].filter((m): m is string => m !== undefined))]
+          : undefined;
+      if (initialModels !== undefined) {
+        const known = new Set(app.models.map((m) => m.id));
+        for (const id of initialModels) {
+          if (!known.has(id)) {
+            process.stderr.write(
+              `[warn] unknown model "${id}" (not in registry or discovery output) — ` +
+                `it will run as a mock unless "sys models --refresh" lists it.\n`,
+            );
+          }
+        }
+      }
       return startTui(app, {
         notify: args.notify,
         yolo: args.dangerouslySkip,
         permission,
         lessons: recallLessons(app.sessions, 5),
-        initialModels:
-          args.model !== undefined || args.agents.length > 0
-            ? [...new Set([args.model, ...args.agents].filter((m): m is string => m !== undefined))]
-            : undefined,
+        initialModels,
         initialMode: args.mode,
         createAgents: (ids, level) =>
           createDriverAgents(
@@ -168,7 +180,7 @@ async function main(): Promise<number> {
             toolCheckFor(app, args.dangerouslySkip, () => permission.current),
             level,
           ),
-        createDriver: (id) => createDriverFor(app.config, id, undefined, app.models),
+        createDriver: (id, level) => createDriverFor(app.config, id, undefined, app.models, level),
       });
     }
     case "headless": {

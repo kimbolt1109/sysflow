@@ -28,6 +28,8 @@ export interface Config {
   uiTheme?: string;
   noColor: boolean;
   truecolor: boolean;
+  /** per CLI-subprocess timeout in ms (default 120000) */
+  cliTimeoutMs: number;
   auth: FlowAuth;
 }
 
@@ -155,6 +157,15 @@ function positiveNumber(raw: string | undefined, name: string, fallback: number)
   return n;
 }
 
+function positiveMs(raw: string | undefined, name: string, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`${name} must be a positive number of milliseconds, got "${raw}"`);
+  }
+  return Math.floor(n);
+}
+
 export function defaultDataDir(): string {
   return join(homedir(), ".flow");
 }
@@ -233,6 +244,7 @@ export function loadConfig(
     uiTheme: nonempty(env.APP_FLOW_THEME),
     noColor: nonempty(env.NO_COLOR) !== undefined,
     truecolor: env.COLORTERM === "truecolor" || env.COLORTERM === "24bit",
+    cliTimeoutMs: positiveMs(env.APP_CLI_TIMEOUT_MS, "APP_CLI_TIMEOUT_MS", 120000),
     auth: {
       anthropic: nonempty(env.APP_ANTHROPIC_API_KEY),
       openai: nonempty(env.APP_OPENAI_API_KEY),

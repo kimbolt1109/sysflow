@@ -140,10 +140,20 @@ export class LocalTools implements ToolsPort {
         (error: ExecException | null, stdout: string, stderr: string) => {
           const output = `${stdout}${stderr}`;
           if (error !== null) {
-            resolvePromise({
-              ok: false,
-              output: `exit ${error.code ?? "?"}: ${output}`.slice(0, 8000),
-            });
+            if (error.killed === true) {
+              resolvePromise({
+                ok: false,
+                output: `bash timed out after ${(timeoutMs / 1000).toFixed(0)}s: ${output}`.slice(
+                  0,
+                  8000,
+                ),
+              });
+            } else {
+              resolvePromise({
+                ok: false,
+                output: `exit ${error.code ?? "?"}: ${output}`.slice(0, 8000),
+              });
+            }
           } else {
             resolvePromise({ ok: true, output: output.slice(0, 8000) });
           }
@@ -379,10 +389,20 @@ function runPs(script: string, timeoutMs = 30000): Promise<{ ok: boolean; output
       (error: ExecFileException | null, stdout: string, stderr: string) => {
         const output = `${stdout}${stderr}`;
         if (error !== null) {
-          resolvePromise({
-            ok: false,
-            output: `exit ${error.code ?? "?"}: ${output}`.slice(0, 8000),
-          });
+          if (error.killed === true) {
+            resolvePromise({
+              ok: false,
+              output: `command timed out after ${(timeoutMs / 1000).toFixed(0)}s: ${output}`.slice(
+                0,
+                8000,
+              ),
+            });
+          } else {
+            resolvePromise({
+              ok: false,
+              output: `exit ${error.code ?? "?"}: ${output}`.slice(0, 8000),
+            });
+          }
         } else {
           resolvePromise({ ok: true, output: output.slice(0, 8000) });
         }

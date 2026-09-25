@@ -81,13 +81,17 @@ export class DriverAgent implements Orchestrant {
     this.layaUrl = extras.layaUrl;
   }
 
+  /** One-shot text judgments (critique, synthesis, retro): never allowed to touch the workspace. */
   private ask(system: string, user: string): Promise<string> {
     const full = this.contextPrefix === "" ? system : `${this.contextPrefix}\n\n${system}`;
     return this.driver
-      .sendMessage([
-        { role: "system", content: full },
-        { role: "user", content: user },
-      ])
+      .sendMessage(
+        [
+          { role: "system", content: full },
+          { role: "user", content: user },
+        ],
+        { readOnly: true },
+      )
       .then((r) => r.text);
   }
 
@@ -100,6 +104,7 @@ export class DriverAgent implements Orchestrant {
       task,
       {
         check: readOnlyCheck,
+        readOnly: true,
         hooks: this.hooks,
         onSkill: (name) => this.skillBody?.(name),
         onQuestion: this.onQuestion,
@@ -124,7 +129,9 @@ export class DriverAgent implements Orchestrant {
     const parsed = parseScores(reply);
     const out: Record<string, { score: number; note: string }> = {};
     for (const d of drafts) {
-      const verdict = parsed[d.agent] ?? { score: 5, note: "no verdict" };
+      // No verdict means no critique: an invented middling score would skew lead selection.
+      const verdict = parsed[d.agent];
+      if (verdict === undefined) continue;
       out[d.agent] = { score: clampScore(verdict.score), note: verdict.note };
     }
     return out;
@@ -219,6 +226,7 @@ export class DriverAgent implements Orchestrant {
       `plan: ${plan}\noutcome: ${outcome.summary}`,
       {
         check: readOnlyCheck,
+        readOnly: true,
         hooks: this.hooks,
         onSkill: (name) => this.skillBody?.(name),
         onQuestion: this.onQuestion,
@@ -230,7 +238,8 @@ export class DriverAgent implements Orchestrant {
       },
     );
     const reply = result.answer;
-    if (/^\s*approve\b/i.test(reply)) return { approved: true, notes: reply.slice(0, 300) };
+    // Models often dress the verdict up: "**APPROVE**", "> Approve:", "# APPROVE".
+    if (/^[\s*_#>`-]*approve\b/i.test(reply)) return { approved: true, notes: reply.slice(0, 300) };
     return { approved: false, notes: reply.slice(0, 300) };
   }
 
@@ -243,6 +252,7 @@ export class DriverAgent implements Orchestrant {
       `plan: ${plan}\noutcome: ${outcome.summary}`,
       {
         check: readOnlyCheck,
+        readOnly: true,
         hooks: this.hooks,
         onSkill: (name) => this.skillBody?.(name),
         onQuestion: this.onQuestion,
@@ -287,7 +297,13 @@ function lensGuidance(lens: VerifyLens): string {
 export function parseVerifyVerdict(reply: string): VerifyVerdict {
   const start = reply.indexOf("{");
   const end = reply.lastIndexOf("}");
-  const fallback: VerifyVerdict = { score: 50, passed: true, notes: "", checks: [] };
+  const fallback: VerifyVerdict = {
+    score: 0,
+    passed: true,
+    notes: `no score returned: ${reply.replace(/\s+/g, " ").trim().slice(0, 200)}`,
+    checks: [],
+    unscored: true,
+  };
   if (start < 0 || end <= start) return fallback;
   try {
     const parsed = JSON.parse(reply.slice(start, end + 1)) as {
@@ -296,8 +312,9 @@ export function parseVerifyVerdict(reply: string): VerifyVerdict {
       notes?: unknown;
       checks?: unknown;
     };
+    if (typeof parsed.score !== "number") return fallback;
     return {
-      score: typeof parsed.score === "number" ? parsed.score : 50,
+      score: parsed.score,
       passed: typeof parsed.passed === "boolean" ? parsed.passed : true,
       notes: typeof parsed.notes === "string" ? parsed.notes.slice(0, 500) : "",
       checks: Array.isArray(parsed.checks)

@@ -160,7 +160,16 @@ export async function runSelector(
   );
   let models: string[];
   if (preselected !== undefined && preselected.length > 0) {
-    models = preselected;
+    const known = new Set(flat.map((m) => m.id));
+    for (const id of preselected) {
+      if (!known.has(id)) {
+        process.stderr.write(
+          `[warn] unknown model "${id}" — skipping (not in registry or discovery).\n`,
+        );
+      }
+    }
+    models = preselected.filter((id) => known.has(id));
+    if (models.length === 0) throw new Error("no known models selected");
   } else if (process.stdin.isTTY === true && process.stdout.isTTY === true) {
     const theme = app.config.noColor ? PICKER_PLAIN : PICKER_THEME;
     const picked = await pickModels(

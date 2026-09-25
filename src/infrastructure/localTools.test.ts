@@ -75,6 +75,16 @@ describe("LocalTools", () => {
     expect(result.output).toBe("ok");
   });
 
+  it("reports shell timeouts instead of a bare exit code", async () => {
+    const result = await tools.bash('node -e "setTimeout(() => {}, 3000)"', 500);
+
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain("timed out");
+    // The timeout kills the shell but the orphaned sleeper keeps the cwd
+    // handle until it exits on its own; wait it out before teardown.
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 3500));
+  });
+
   it("validates computer pointer input without touching the mouse", async () => {
     expect(parseClick(100, 200, "left")).toEqual({ x: 100, y: 200, button: "left" });
     expect(parseClick(100, 200, "RIGHT")).toEqual({ x: 100, y: 200, button: "right" });

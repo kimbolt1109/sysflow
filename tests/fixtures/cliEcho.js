@@ -1,6 +1,7 @@
 // Fake external CLI for CliDriver tests. Usage:
 //   node cliEcho.js <format>   (reads PROMPT from argv or stdin, prints canned output)
-// Formats: jsonl (one {"text"} per line), raw (plain text), fail (exit 3), slow (sleep).
+// Formats: jsonl (one {"text"} per line), raw (plain text), fail (exit 3), slow (sleep),
+// agy / agy-error (agy stream-json over stdin, echoing argv into the answer).
 "use strict";
 
 const format = process.argv[2] || "jsonl";
@@ -27,6 +28,38 @@ async function main() {
   if (format === "fail") {
     process.stderr.write("boom\n");
     process.exitCode = 3;
+    return;
+  }
+  if (format === "agy" || format === "agy-error") {
+    // agy stream-json protocol: one {"event":"user"} envelope per stdin line.
+    const envelope = JSON.parse((await readStdin()).trim().split("\n")[0] || "{}");
+    const prompt = (envelope.message && envelope.message.content) || "none";
+    const args = process.argv.slice(3).join(" ");
+    const emit = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
+    emit({ event: "init", conversation_id: "c1", init: { tools: ["view_file"] } });
+    if (format === "agy-error") {
+      emit({
+        event: "result",
+        result: { status: "ERROR", response: "", error: "quota exhausted" },
+      });
+      return;
+    }
+    const answer = `answer to ${prompt} | args: ${args}`;
+    const half = Math.floor(answer.length / 2);
+    for (const delta of [answer.slice(0, half), answer.slice(half)]) {
+      emit({
+        event: "step_update",
+        step_update: { step_index: 1, step_type: "agent_response", text_delta: delta },
+      });
+    }
+    emit({
+      event: "result",
+      result: {
+        status: "SUCCESS",
+        response: answer,
+        usage: { input_tokens: 42, output_tokens: 7 },
+      },
+    });
     return;
   }
   const promptFlag = process.argv.indexOf("-p");

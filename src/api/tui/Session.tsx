@@ -8,17 +8,19 @@ import { renderCost, renderStatus } from "@/api/costView.js";
 import { buildSlashCatalog, resolveSlashAlias } from "@/api/tui/slashMenu.js";
 import { PromptInput } from "@/api/tui/PromptInput.js";
 import { buildSkillTask, renderTranscriptMarkdown } from "@/api/tui/sessionTurn.js";
+import { TranscriptView, type TranscriptLine } from "@/api/tui/SessionView.js";
 import {
   Header,
+  HELP_ROWS,
   HelpOverlay,
   QueuePane,
   ShortcutsBar,
+  SIDEBAR_WIDTH,
   SideBar,
   StatusBar,
-  TranscriptView,
   type AgentBadge,
-  type TranscriptLine,
-} from "@/api/tui/SessionView.js";
+} from "@/api/tui/SessionChrome.js";
+import { describeToolCall, stripToolFences, summarizeToolOutput } from "@/api/tui/toolLines.js";
 import { substituteArgs } from "@/domain/commands.js";
 import { describeCheckpoint } from "@/domain/checkpoints.js";
 import { compactHistory } from "@/domain/compaction.js";
@@ -59,7 +61,7 @@ export interface SessionProps {
   yolo: boolean;
   permission: { current: PermissionMode };
   createAgents: (ids: string[], thinking: ThinkingLevel) => Orchestrant[];
-  createDriver: (id: string) => Driver;
+  createDriver: (id: string, thinking?: ThinkingLevel) => Driver;
   /** past council lessons, injected by the composition root ("" when none) */
   lessons?: string;
 }
@@ -100,7 +102,6 @@ export function Session({
   const busyRef = useRef(false);
   const busyStartRef = useRef<number | undefined>(undefined);
   const queueRef = useRef<string[]>([]);
-  const [queued, setQueued] = useState(0);
   const [queueList, setQueueList] = useState<string[]>([]);
   const [lastTurnMs, setLastTurnMs] = useState<number | undefined>(undefined);
   const [pending, setPending] = useState<PendingQuestion | undefined>(undefined);
@@ -129,7 +130,8 @@ export function Session({
   ]);
 
   const soloId = modelIds[0] ?? app.config.defaultModel;
-  const driver = useMemo(() => createDriver(soloId), [createDriver, soloId]);
+  const driver = useMemo(() => createDriver(soloId, thinking), [createDriver, soloId, thinking]);
+  const soloLabel = driver.id.includes("(mock:") ? `${soloId} (mock — no key/CLI)` : soloId;
   const council = useMemo(() => {
     if (modelIds.length < 2) return undefined;
     const session = new CouncilSession(createAgents(modelIds, thinking), (record) =>
@@ -153,9 +155,16 @@ export function Session({
   const columns = stdout?.columns ?? 100;
   const termRows = stdout?.rows ?? 24;
   const narrow = columns < 90;
-  const sidebarCollapsed = sidebarHidden || narrow;
-  const viewHeight = Math.max(5, termRows - 14);
-  const transcriptWidth = Math.max(20, columns - (sidebarCollapsed ? 12 : 48));
+  const showSidebar = council !== undefined && !sidebarHidden && !narrow;
+  // Rows around the transcript: header, spacing, the working line, the bordered prompt,
+  // status and shortcut lines, scroll indicators, plus whichever panes are open.
+  const chromeRows =
+    12 +
+    (queueList.length > 0 ? 4 + Math.min(3, queueList.length) : 0) +
+    (pending !== undefined ? 4 + pending.options.length : 0) +
+    (helpOpen && pending === undefined ? HELP_ROWS.length + 3 : 0);
+  const viewHeight = Math.max(5, termRows - chromeRows);
+  const transcriptWidth = Math.max(20, columns - 4 - (showSidebar ? SIDEBAR_WIDTH + 1 : 0));
   const rowCounts = useMemo(
     () => transcriptRowCounts(lines, transcriptWidth),
     [lines, transcriptWidth],
@@ -194,6 +203,9 @@ export function Session({
   const updateLine = (key: number, text: string): void => {
     const clean = sanitizeTranscriptText(text);
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, text: clean } : l)));
+  };
+  const removeLine = (key: number): void => {
+    setLines((prev) => prev.filter((l) => l.key !== key));
   };
 
   const scrollBy = (delta: number): void => {
@@ -269,10 +281,9 @@ export function Session({
 
   useEffect(() => {
     app.sessions.append(sessionId, { type: "session-start", model: soloId });
-    push(
-      "info",
-      `session ${sessionId.slice(0, 8)} · ${council === undefined ? soloId : `${modelIds.length} agents · mode=${council.mode}`} · /help for commands`,
-    );
+    if (driver.id.includes("(mock:")) {
+      push("error", `${soloId} has no API key or CLI installed — replies are canned mock text.`);
+    }
     void app.hooks.fire("SessionStart", { session_id: sessionId, model: soloId });
   }, [sessionId]);
 
@@ -360,20 +371,38 @@ export function Session({
       }
       return;
     }
-    const key = push("assistant", "");
     historyRef.current.push({ role: "user", content: task });
     const before = await snapshotBefore();
+    // Each model turn streams into its own reply line; tool calls land between them.
+    let replyKey: number | undefined;
+    let turnText = "";
+    const closeTurn = (): void => {
+      if (replyKey !== undefined) {
+        const shown = stripToolFences(turnText);
+        if (shown === "") removeLine(replyKey);
+        else updateLine(replyKey, shown);
+      }
+      replyKey = undefined;
+      turnText = "";
+    };
     try {
-      let text = "";
       const soloCheck = (tool: string, input: Record<string, unknown>) =>
         yolo ? "allow" : checkPermission(permission.current, app.rules, tool, input);
       const full = await runToolLoop(driver, app.tools, TOOL_SYSTEM, task, {
         seed: historyRef.current.slice(0, -1),
         maxTurns: 12,
         check: soloCheck,
+        // plan mode must also stop CLI agents from editing through their own tools
+        readOnly: !yolo && permission.current === "plan",
         emit: (token) => {
-          text += token;
-          updateLine(key, text);
+          turnText += token;
+          const shown = stripToolFences(turnText);
+          if (replyKey !== undefined) updateLine(replyKey, shown);
+          else if (shown !== "") replyKey = push("assistant", shown);
+        },
+        onTool: (name, input, output) => {
+          closeTurn();
+          push("tool", `${describeToolCall(name, input)}\n${summarizeToolOutput(name, output)}`);
         },
         hooks: {
           before: (name, input) =>
@@ -400,21 +429,30 @@ export function Session({
         onListMcpTools: async () => formatMcpInventory(await app.mcp.toolInventory()),
         onMcpTool: (toolName, args) => app.mcp.call(toolName, args),
       });
-      updateLine(key, full.answer);
+      const answer = stripToolFences(full.answer);
+      if (answer === "") {
+        if (replyKey !== undefined) removeLine(replyKey);
+        push("info", `no text reply after ${full.turns} turn${full.turns === 1 ? "" : "s"}`);
+      } else if (replyKey !== undefined) {
+        updateLine(replyKey, answer);
+      } else {
+        push("assistant", answer);
+      }
       historyRef.current.push({ role: "assistant", content: full.answer });
       app.sessions.append(sessionId, { type: "assistant", text: full.answer });
       const base = soloId.split(" (")[0] ?? soloId;
       const used = app.recordUsage(
         base.split("/")[0] ?? "unknown",
         base,
-        historyTokens(task),
-        historyTokens(full.answer),
+        full.usage.input > 0 ? full.usage.input : historyTokens(task),
+        full.usage.output > 0 ? full.usage.output : historyTokens(full.answer),
       );
       setCost((c) => c + used.cost);
       if (notify) app.notifyUser("Sys task complete", full.answer.slice(0, 120));
       await pushDiffs(before);
     } catch (err) {
-      updateLine(key, `error: ${err instanceof Error ? err.message : String(err)}`);
+      closeTurn();
+      push("error", err instanceof Error ? err.message : String(err));
       app.sessions.append(sessionId, { type: "error", message: String(err) });
     }
   };
@@ -725,10 +763,13 @@ export function Session({
           return;
         }
         try {
-          const verdict = await driver.sendMessage([
-            { role: "system", content: "Review this diff for bugs and quality. Be concise." },
-            { role: "user", content: diff.output },
-          ]);
+          const verdict = await driver.sendMessage(
+            [
+              { role: "system", content: "Review this diff for bugs and quality. Be concise." },
+              { role: "user", content: diff.output },
+            ],
+            { readOnly: true },
+          );
           push("assistant", verdict.text);
           historyRef.current.push(
             { role: "user", content: diff.output },
@@ -800,9 +841,7 @@ export function Session({
     );
     if (busyRef.current) {
       queueRef.current.push(input);
-      setQueued(queueRef.current.length);
       setQueueList([...queueRef.current]);
-      push("info", `queued #${queueRef.current.length} — runs after the current turn`);
       return;
     }
     busyRef.current = true;
@@ -819,7 +858,6 @@ export function Session({
     } finally {
       setLastTurnMs(Date.now() - started);
       const next = queueRef.current.shift();
-      setQueued(queueRef.current.length);
       setQueueList([...queueRef.current]);
       if (next !== undefined) {
         await runOne(next);
@@ -833,7 +871,7 @@ export function Session({
 
   const badges: AgentBadge[] =
     council === undefined
-      ? [{ name: soloId, lead: true, muted: false, stopped: false }]
+      ? []
       : council.names().map((n) => ({
           name: n,
           lead: council.lead === n,
@@ -845,11 +883,18 @@ export function Session({
     busy && busyStartRef.current !== undefined
       ? formatElapsed(now - busyStartRef.current)
       : undefined;
-  const runningLabel = elapsed === undefined ? undefined : `working ${elapsed}`;
-  const headerLeft = council === undefined ? soloId : `${modelIds.length} agents · ${council.mode}`;
-  const headerRight =
-    `${sessionId.slice(0, 8)} · ${thinking} · ${permission.current}` +
-    (queued > 0 ? ` · ⏳${queued}` : "");
+  const headerLeft =
+    council === undefined ? soloLabel : `${modelIds.length} agents · ${council.mode}`;
+  const headerRight = `thinking ${thinking} · ${permission.current}`;
+  const statusLeft = `session ${sessionId.slice(0, 8)} · $${cost.toFixed(4)} · ctx ${Math.round(contextPct * 100)}%`;
+  const statusRight = [
+    scrollOffset > 0 ? "scrolled" : "",
+    lastTurnMs === undefined ? "" : `took ${formatElapsed(lastTurnMs)}`,
+    find !== undefined ? `find "${find.needle}" ${find.pos + 1}/${find.matches.length}` : "",
+    council !== undefined && !showSidebar ? "Ctrl+B roster" : "",
+  ]
+    .filter((s) => s !== "")
+    .join(" · ");
   const headerAlert =
     yolo === true
       ? "YOLO"
@@ -862,7 +907,7 @@ export function Session({
   return (
     <Box flexDirection="column">
       <Header left={headerLeft} right={headerRight} alert={headerAlert} />
-      <Box marginTop={1}>
+      <Box>
         <Box flexDirection="column" flexGrow={1}>
           <TranscriptView
             lines={lines}
@@ -872,17 +917,7 @@ export function Session({
             highlight={find?.needle ?? ""}
           />
         </Box>
-        <SideBar
-          mode={council?.mode ?? "solo"}
-          agents={badges}
-          skills={app.skills.map((s) => s.name)}
-          sessionId={sessionId}
-          cost={cost}
-          collapsed={sidebarCollapsed}
-          queue={queueList}
-          contextPct={contextPct}
-          runningLabel={runningLabel}
-        />
+        {showSidebar && council !== undefined && <SideBar mode={council.mode} agents={badges} />}
       </Box>
       <QueuePane queue={queueList} />
       {pending !== undefined && (
@@ -906,7 +941,10 @@ export function Session({
         </Box>
       )}
       {helpOpen && pending === undefined && <HelpOverlay />}
-      <Box marginTop={1} flexDirection="column">
+      <Box marginTop={1} height={1}>
+        {busy && <Spinner label={`working ${elapsed ?? "0s"} · type to queue a follow-up`} />}
+      </Box>
+      <Box borderStyle="round" borderColor={busy ? "gray" : "cyan"} paddingX={1}>
         <PromptInput
           key={turnKey}
           initialValue={restored}
@@ -914,24 +952,18 @@ export function Session({
           catalog={catalog}
           placeholder={
             busy
-              ? `working… (type to queue${elapsed === undefined ? "" : ` · ${elapsed}`})`
+              ? "queue a follow-up…"
               : stashNote !== ""
                 ? stashNote
-                : "message or /command · ↑↓ history · \\+Enter newline"
+                : "ask anything · / for commands · \\+Enter for a newline"
           }
           onChange={onDraftChange}
           onSubmit={submit}
           onToggleHelp={() => setHelpOpen((v) => !v)}
         />
-        {busy && <Spinner label={elapsed === undefined ? "working" : `working ${elapsed}`} />}
       </Box>
-      <Box marginTop={1} flexDirection="column">
-        <StatusBar
-          left={`${council === undefined ? soloId : `${modelIds.length} agents · ${council.mode}`} · thinking=${thinking} · $${cost.toFixed(4)} · ctx ${Math.round(contextPct * 100)}%${queued > 0 ? ` · ${queued} queued` : ""}`}
-          right={`${scrollOffset > 0 ? "scrolled" : "live"}${lastTurnMs === undefined ? "" : ` · took ${formatElapsed(lastTurnMs)}`}${find !== undefined ? ` · find "${find.needle}" ${find.pos + 1}/${find.matches.length}` : ""}${sidebarCollapsed ? " · sidebar hidden (Ctrl+B)" : ""}`}
-        />
-        <ShortcutsBar narrow={narrow} />
-      </Box>
+      <StatusBar left={statusLeft} right={statusRight} />
+      <ShortcutsBar narrow={narrow} />
     </Box>
   );
 }

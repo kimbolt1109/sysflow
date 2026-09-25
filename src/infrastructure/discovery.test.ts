@@ -16,9 +16,9 @@ import {
 } from "@/infrastructure/discovery.js";
 
 describe("cli probers", () => {
-  it("parses opencode provider/model lines", () => {
-    const models = discoverOpencodeModels(
-      () => "opencode/muse-spark\nopenrouter/a:free\n\nnoise\n",
+  it("parses opencode provider/model lines", async () => {
+    const models = await discoverOpencodeModels(
+      async () => "opencode/muse-spark\nopenrouter/a:free\n\nnoise\n",
     );
 
     expect(models.map((m) => m.id)).toEqual(["opencode/muse-spark", "openrouter/a:free"]);
@@ -41,19 +41,19 @@ describe("cli probers", () => {
     expect(mapAgyModel("weird-1", "Weird").id).toBe("agy/weird-1");
   });
 
-  it("parses agy tab-separated output skipping the fetching line", () => {
-    const models = discoverAgyModels(
-      () => "Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\n",
+  it("parses agy tab-separated output skipping the fetching line", async () => {
+    const models = await discoverAgyModels(
+      async () => "Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\n",
     );
 
     expect(models).toHaveLength(1);
     expect(models[0]?.label).toBe("Gemini 3.8 Flash (High)");
   });
 
-  it("parses grok's available-models section", () => {
+  it("parses grok's available-models section", async () => {
     const out =
       "You are not authenticated.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  grok-4.5\n";
-    const models = discoverGrokModels(() => out);
+    const models = await discoverGrokModels(async () => out);
 
     expect(models.map((m) => m.id)).toEqual(["grok/grok-4.6", "grok/grok-4.5"]);
     expect(models[0]?.cliModel).toBe("grok-4.6");
@@ -100,7 +100,7 @@ describe("api probers", () => {
 
   it("collects successes across sources", async () => {
     const models = await discoverAll({
-      run: (command) => {
+      run: async (command) => {
         if (command === "agy") return "gemini-1\tG1\n";
         throw new Error("missing");
       },
@@ -111,6 +111,34 @@ describe("api probers", () => {
     });
 
     expect(models.map((m) => m.id)).toEqual(["google/gemini-1"]);
+  });
+
+  it("probes the CLIs concurrently instead of one after another", async () => {
+    // Each probe waits until all three have started: run serially, this never resolves.
+    const started: string[] = [];
+    let release = (): void => undefined;
+    const allStarted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const run = async (command: string): Promise<string> => {
+      started.push(command);
+      if (started.length === 3) release();
+      await allStarted;
+      return command === "agy" ? "gemini-1\tG1\n" : "";
+    };
+    const guard = new Promise<"serial">((resolve) => setTimeout(() => resolve("serial"), 2000));
+
+    const outcome = await Promise.race([
+      discoverAll({
+        run,
+        fetchFn: (async () => Response.json({})) as typeof fetch,
+        ollamaBaseUrl: "http://localhost:11434/v1",
+      }),
+      guard,
+    ]);
+
+    expect(outcome).not.toBe("serial");
+    expect(started.sort()).toEqual(["agy", "grok", "opencode"]);
   });
 });
 
