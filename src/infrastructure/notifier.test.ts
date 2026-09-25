@@ -9,14 +9,18 @@ describe("notifier", () => {
     expect(run).toHaveBeenCalled();
   });
 
-  it("falls back to a WinRT toast when BurntToast is missing", () => {
-    const run = vi.fn((_file: string, _argv: string[]): { ok: boolean } => ({ ok: false }));
+  // notify() only takes the PowerShell toast path on Windows.
+  it.skipIf(process.platform !== "win32")(
+    "falls back to a WinRT toast when BurntToast is missing",
+    () => {
+      const run = vi.fn((_file: string, _argv: string[]): { ok: boolean } => ({ ok: false }));
 
-    notify("title", "body", { run });
+      notify("title", "body", { run });
 
-    const commands = run.mock.calls.map((c) => String(c[1]));
-    expect(commands.some((c) => c.includes("ToastNotificationManager"))).toBe(true);
-  });
+      const commands = run.mock.calls.map((c) => String(c[1]));
+      expect(commands.some((c) => c.includes("ToastNotificationManager"))).toBe(true);
+    },
+  );
 
   it("escapes xml in toast bodies", () => {
     expect(escapeXml(`a<b>&"'c`)).toBe("a&lt;b&gt;&amp;&quot;&apos;c");

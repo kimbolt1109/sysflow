@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { basename } from "node:path";
 import type { ChatMessage, QuotaInfo } from "@/domain/models.js";
 import type { Driver, SendOptions, SendResult } from "@/domain/drivers.js";
 import type { ThinkingLevel } from "@/domain/thinking.js";
@@ -48,9 +47,9 @@ const PERMISSION_FLAGS: Record<string, { approve: string[]; readOnly: string[] }
 };
 
 export function cliDialect(command: string): string {
-  return basename(command)
-    .replace(/\.(exe|cmd|bat|com|ps1)$/i, "")
-    .toLowerCase();
+  // Split on both separators: path.basename keeps backslashes on POSIX.
+  const base = command.split(/[\\/]/).pop() ?? command;
+  return base.replace(/\.(exe|cmd|bat|com|ps1)$/i, "").toLowerCase();
 }
 
 export function modelArgs(dialect: string, cliModel?: string): string[] {
