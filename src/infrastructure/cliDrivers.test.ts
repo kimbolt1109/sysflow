@@ -1,16 +1,24 @@
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CliDriver,
-  cliVersion,
-  extractCliText,
-  findOnPath,
+  cliDialect,
+  cliInvocation,
+  effortArgs,
   headlessArgs,
-  isDirectPath,
   modelArgs,
-  quoteCmdArg,
-  resolveLaunch,
   type CliDriverDef,
 } from "@/infrastructure/cliDrivers.js";
+import {
+  cliVersion,
+  findOnPath,
+  isDirectPath,
+  quoteCmdArg,
+  resolveLaunch,
+} from "@/infrastructure/cliLaunch.js";
+import { extractCliText } from "@/infrastructure/cliOutput.js";
 import { AuthError, DriverError } from "@/lib/errors.js";
 
 const FIXTURE = "tests/fixtures/cliEcho.js";
@@ -33,13 +41,63 @@ describe("cliDrivers", () => {
       "--verbose",
     ]);
     expect(headlessArgs("codex", "hi", []).slice(0, 2)).toEqual(["exec", "--json"]);
-    expect(headlessArgs("agy", "hi", ["--yolo"])).toEqual([
-      "-p",
-      "hi",
+    expect(cliDialect("C:\\Users\\me\\AppData\\Local\\agy\\bin\\agy.exe")).toBe("agy");
+    expect(cliDialect("claude")).toBe("claude");
+  });
+
+  it("sends agy prompts over stdin as stream-json, never argv", () => {
+    const inv = cliInvocation("agy", 'say "hi"\nline two', {
+      extraArgs: ["--dangerously-skip-permissions"],
+      cliModel: "gemini-3.8-flash-high",
+    });
+
+    expect(inv.args).toEqual([
+      "--model",
+      "gemini-3.8-flash-high",
+      "--dangerously-skip-permissions",
+      "--input-format",
+      "stream-json",
       "--output-format",
-      "json",
-      "--yolo",
+      "stream-json",
+      "-p=",
     ]);
+    expect(JSON.parse(inv.stdin ?? "")).toEqual({
+      event: "user",
+      message: { role: "user", content: 'say "hi"\nline two' },
+    });
+  });
+
+  it("swaps auto-approve flags for read-only modes on read-only calls", () => {
+    const agy = cliInvocation("agy", "p", {
+      extraArgs: ["--dangerously-skip-permissions"],
+      readOnly: true,
+    });
+    expect(agy.args).not.toContain("--dangerously-skip-permissions");
+    // agy's --mode plan executes its plan in print mode, so it is never used
+    expect(agy.args).not.toContain("--mode");
+
+    const claude = cliInvocation("claude", "p", {
+      extraArgs: ["--dangerously-skip-permissions", "--permission-mode", "bypassPermissions"],
+      readOnly: true,
+    });
+    expect(claude.args).not.toContain("--dangerously-skip-permissions");
+    expect(claude.args).not.toContain("bypassPermissions");
+    expect(claude.args.join(" ")).toContain("--permission-mode plan");
+
+    const grok = cliInvocation("grok", "p", { extraArgs: ["--always-approve"], readOnly: true });
+    expect(grok.args).not.toContain("--always-approve");
+
+    const writer = cliInvocation("agy", "p", { extraArgs: ["--dangerously-skip-permissions"] });
+    expect(writer.args).toContain("--dangerously-skip-permissions");
+  });
+
+  it("maps thinking level to CLI effort flags", () => {
+    expect(effortArgs("agy", "high", "gemini-3.1-pro")).toEqual(["--effort", "high"]);
+    expect(effortArgs("agy", "xhigh")).toEqual(["--effort", "high"]);
+    expect(effortArgs("agy", "low", "gemini-3.8-flash-high")).toEqual([]);
+    expect(effortArgs("claude", "xhigh")).toEqual(["--effort", "xhigh"]);
+    expect(effortArgs("opencode", "high")).toEqual([]);
+    expect(effortArgs("agy", undefined)).toEqual([]);
   });
 
   it("builds per-CLI --model flags", () => {
@@ -73,6 +131,90 @@ describe("cliDrivers", () => {
     expect(tokens.join("")).toContain("answer to hi");
   });
 
+  it("sends the system prompt and history, not just the last message", async () => {
+    const result = await driver().sendMessage([
+      { role: "system", content: "Reply ONLY as JSON." },
+      { role: "user", content: "my name is Ada" },
+      { role: "assistant", content: "Hi Ada" },
+      { role: "user", content: "what is my name?" },
+    ]);
+
+    expect(result.text).toContain("Reply ONLY as JSON.");
+    expect(result.text).toContain("my name is Ada");
+    expect(result.text).toContain("what is my name?");
+  });
+
+  it("keeps quotes and newlines intact in argv prompts", async () => {
+    const result = await driver({ argvPrefix: [FIXTURE, "raw"] }).sendMessage([
+      { role: "user", content: 'say "hi there" {"path": "a b.ts"}\nline two' },
+    ]);
+
+    expect(result.text).toContain('say "hi there" {"path": "a b.ts"}');
+    expect(result.text).toContain("line two");
+  });
+
+  it("launches npm .cmd shims directly so prompts survive quoting", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "shim-"));
+    mkdirSync(join(dir, "node_modules", "echo"), { recursive: true });
+    copyFileSync(FIXTURE, join(dir, "node_modules", "echo", "cli.js"));
+    writeFileSync(
+      join(dir, "echo.cmd"),
+      '@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\echo\\cli.js" %*\r\n',
+    );
+    const shimmed = new CliDriver("test/model", {
+      command: join(dir, "echo.cmd"),
+      argvPrefix: ["raw"],
+      dialect: "generic",
+    });
+
+    const result = await shimmed.sendMessage([{ role: "user", content: 'quote "me" please' }]);
+
+    expect(result.text).toContain('quote "me" please');
+  });
+
+  it("streams agy deltas over stdin and reports its real usage", async () => {
+    const agy = driver({ argvPrefix: [FIXTURE, "agy"], dialect: "agy" });
+    const tokens: string[] = [];
+
+    const result = await agy.streamMessage(
+      [
+        { role: "system", content: "sys rules" },
+        { role: "user", content: 'fix "it"\nplease' },
+      ],
+      (t) => tokens.push(t),
+    );
+
+    expect(tokens.length).toBe(2);
+    expect(tokens.join("")).toBe(result.text);
+    expect(result.text).toContain("sys rules");
+    expect(result.text).toContain('fix "it"\nplease');
+    expect(result.usage).toEqual({ input: 42, output: 7 });
+  });
+
+  it("runs agy read-only calls without auto-approval and with a read-only notice", async () => {
+    const agy = driver({
+      argvPrefix: [FIXTURE, "agy"],
+      dialect: "agy",
+      extraArgs: ["--dangerously-skip-permissions"],
+    });
+
+    const writer = await agy.sendMessage([{ role: "user", content: "x" }]);
+    const reader = await agy.sendMessage([{ role: "user", content: "x" }], { readOnly: true });
+
+    expect(writer.text).toContain("--dangerously-skip-permissions");
+    expect(writer.text).not.toContain("READ-ONLY RUN");
+    expect(reader.text).not.toContain("--dangerously-skip-permissions");
+    expect(reader.text).toContain("READ-ONLY RUN");
+  });
+
+  it("turns agy ERROR results into driver errors", async () => {
+    const agy = driver({ argvPrefix: [FIXTURE, "agy-error"], dialect: "agy" });
+
+    await expect(agy.sendMessage([{ role: "user", content: "x" }])).rejects.toThrow(
+      "quota exhausted",
+    );
+  });
+
   it("reports CLI failures", async () => {
     const failing = driver({ argvPrefix: [FIXTURE, "fail"] });
 
@@ -94,6 +236,12 @@ describe("cliDrivers", () => {
     const slow = driver({ argvPrefix: [FIXTURE, "slow"], timeoutMs: 500 });
 
     await expect(slow.sendMessage([{ role: "user", content: "x" }])).rejects.toThrow("timed out");
+  });
+
+  it("names the model in timeout errors", async () => {
+    const slow = driver({ argvPrefix: [FIXTURE, "slow"], timeoutMs: 500 });
+
+    await expect(slow.sendMessage([{ role: "user", content: "x" }])).rejects.toThrow("test/model");
   });
 
   it("reads versions", () => {

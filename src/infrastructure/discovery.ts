@@ -1,26 +1,36 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { resolveLaunch } from "@/infrastructure/cliDrivers.js";
+import { resolveLaunch } from "@/infrastructure/cliLaunch.js";
 import type { DiscoveredModel } from "@/domain/discovery.js";
 
-export type RunFn = (command: string, args: string[]) => string;
+export type RunFn = (command: string, args: string[]) => Promise<string>;
 
 export const DISCOVERY_TTL_MS = 30 * 60 * 1000;
 
-export function runCli(command: string, args: string[]): string {
+/** Runs a CLI listing command without blocking the event loop, so the TUI keeps
+ * rendering and the probes for different CLIs overlap. */
+export function runCli(command: string, args: string[], timeoutMs = 15000): Promise<string> {
   const launch = resolveLaunch(command, args);
-  const found = spawnSync(launch.file, launch.argv, { encoding: "utf8", timeout: 15000 });
-  if (found.status !== 0) {
-    throw new Error(
-      `${command} exited ${found.status}: ${String(found.stderr ?? "").slice(0, 200)}`,
+  return new Promise((resolvePromise, reject) => {
+    execFile(
+      launch.file,
+      launch.argv,
+      { encoding: "utf8", timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error === null) {
+          resolvePromise(stdout);
+          return;
+        }
+        const why = error.killed ? `timed out after ${timeoutMs / 1000}s` : `exited ${error.code}`;
+        reject(new Error(`${command} ${why}: ${stderr.slice(0, 200)}`));
+      },
     );
-  }
-  return found.stdout ?? "";
+  });
 }
 
-export function discoverOpencodeModels(run: RunFn): DiscoveredModel[] {
-  const out = run("opencode", ["models"]);
+export async function discoverOpencodeModels(run: RunFn): Promise<DiscoveredModel[]> {
+  const out = await run("opencode", ["models"]);
   const models: DiscoveredModel[] = [];
   for (const line of out.split(/\r?\n/)) {
     const id = line.trim();
@@ -57,8 +67,8 @@ export function mapAgyModel(raw: string, label: string): DiscoveredModel {
   return { id: `agy/${id}`, provider: "agy", label: clean, source: "agy", cliModel: id };
 }
 
-export function discoverAgyModels(run: RunFn): DiscoveredModel[] {
-  const out = run("agy", ["models"]);
+export async function discoverAgyModels(run: RunFn): Promise<DiscoveredModel[]> {
+  const out = await run("agy", ["models"]);
   const models: DiscoveredModel[] = [];
   for (const line of out.split(/\r?\n/)) {
     const parts = line.split("\t");
@@ -70,8 +80,8 @@ export function discoverAgyModels(run: RunFn): DiscoveredModel[] {
   return models;
 }
 
-export function discoverGrokModels(run: RunFn): DiscoveredModel[] {
-  const out = run("grok", ["models"]);
+export async function discoverGrokModels(run: RunFn): Promise<DiscoveredModel[]> {
+  const out = await run("grok", ["models"]);
   const models: DiscoveredModel[] = [];
   let inList = false;
   for (const line of out.split(/\r?\n/)) {
@@ -199,28 +209,11 @@ export interface DiscoveryDeps {
 }
 
 export async function discoverAll(deps: DiscoveryDeps): Promise<DiscoveredModel[]> {
+  // All probes run concurrently; a missing or hung CLI only costs its own slot.
   const settled = await Promise.allSettled([
-    (async () => {
-      try {
-        return discoverOpencodeModels(deps.run);
-      } catch {
-        return [];
-      }
-    })(),
-    (async () => {
-      try {
-        return discoverAgyModels(deps.run);
-      } catch {
-        return [];
-      }
-    })(),
-    (async () => {
-      try {
-        return discoverGrokModels(deps.run);
-      } catch {
-        return [];
-      }
-    })(),
+    discoverOpencodeModels(deps.run),
+    discoverAgyModels(deps.run),
+    discoverGrokModels(deps.run),
     discoverOllamaModels(deps.fetchFn, deps.ollamaBaseUrl).catch(() => []),
     discoverOpenRouterModels(deps.fetchFn, deps.openRouterKey).catch(() => []),
   ]);

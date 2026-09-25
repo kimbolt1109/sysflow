@@ -13,7 +13,7 @@ export interface TuiOpts {
   yolo: boolean;
   permission: { current: PermissionMode };
   createAgents: (ids: string[], thinking: ThinkingLevel) => Orchestrant[];
-  createDriver: (id: string) => Driver;
+  createDriver: (id: string, thinking?: ThinkingLevel) => Driver;
   lessons?: string;
   initialModels?: string[];
   initialMode?: OrchestrationMode;

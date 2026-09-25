@@ -19,7 +19,7 @@ export interface TuiAppProps {
   yolo: boolean;
   permission: { current: PermissionMode };
   createAgents: (ids: string[], thinking: ThinkingLevel) => Orchestrant[];
-  createDriver: (id: string) => Driver;
+  createDriver: (id: string, thinking?: ThinkingLevel) => Driver;
   /** past council lessons from the composition root ("" when none) */
   lessons?: string;
   /** CLI-provided starting models (unknown ids are dropped) */

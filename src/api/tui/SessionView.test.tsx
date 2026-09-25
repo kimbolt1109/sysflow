@@ -2,16 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToString } from "ink";
 import React from "react";
 import { phaseLine } from "@/api/council.js";
-import {
-  foldInfoLines,
-  Header,
-  HelpOverlay,
-  QueuePane,
-  ShortcutsBar,
-  SideBar,
-  StatusBar,
-  TranscriptView,
-} from "@/api/tui/SessionView.js";
+import { foldInfoLines, TranscriptView } from "@/api/tui/SessionView.js";
 
 describe("tui SessionView", () => {
   it("renders user, assistant, and info lines", () => {
@@ -30,25 +21,37 @@ describe("tui SessionView", () => {
     expect(out).toContain("PLANNING");
   });
 
-  it("renders agent badges, skills, and cost", () => {
+  it("renders assistant replies as markdown, not raw markers", () => {
     const out = renderToString(
-      <SideBar
-        mode="council"
-        agents={[
-          { name: "a", lead: true, muted: false, stopped: false },
-          { name: "b", lead: false, muted: true, stopped: false },
+      <TranscriptView
+        lines={[
+          { key: 1, role: "assistant", text: "It exports **`loadConfig`**:\n```ts\nx();\n```" },
         ]}
-        skills={["review"]}
-        sessionId="12345678-aaaa"
-        cost={0.0123}
       />,
+      { columns: 80 },
     );
 
-    expect(out).toContain("council");
-    expect(out).toContain("◆ a");
-    expect(out).toContain("b (muted)");
-    expect(out).toContain("/review");
-    expect(out).toContain("12345678");
+    expect(out).toContain("It exports loadConfig:");
+    expect(out).toContain("│ x();");
+    expect(out).not.toContain("```");
+    expect(out).not.toContain("**");
+  });
+
+  it("renders tool calls as compact lines with their result", () => {
+    const out = renderToString(
+      <TranscriptView
+        lines={[
+          { key: 1, role: "user", text: "read it" },
+          { key: 2, role: "tool", text: "read src/config.ts\n255 lines" },
+          { key: 3, role: "tool", text: "bash rm -rf x\ndenied by policy: bash" },
+        ]}
+      />,
+      { columns: 80 },
+    );
+
+    expect(out).toContain("⏺ read src/config.ts");
+    expect(out).toContain("⎿ 255 lines");
+    expect(out).toContain("⎿ denied by policy: bash");
   });
 
   it("folds repeated phase stubs into one agent list", () => {
@@ -66,6 +69,27 @@ describe("tui SessionView", () => {
     expect(folded[1]?.text).toContain("a, b");
     expect(folded[2]?.text).toContain("critiqued round 1");
     expect(folded[3]?.role).toBe("user");
+  });
+
+  it("keeps per-agent previews when folding events that carry them", () => {
+    const folded = foldInfoLines([
+      {
+        key: 1,
+        role: "info",
+        text: `${phaseLine("PLANNING")} [a] drafted an approach: add a cache`,
+      },
+      {
+        key: 2,
+        role: "info",
+        text: `${phaseLine("PLANNING")} [b] drafted an approach: rewrite it`,
+      },
+      { key: 3, role: "info", text: `${phaseLine("DEBATE")} [a] critiqued round 1: b=7` },
+    ]);
+
+    expect(folded).toHaveLength(2);
+    expect(folded[0]?.text).toContain("drafted an approach — a, b");
+    expect(folded[0]?.text).toContain("\n  a: add a cache\n  b: rewrite it");
+    expect(folded[1]?.text).toContain("critiqued round 1 — a\n  a: b=7");
   });
 
   it("folds badges with color codes and caps long agent lists", () => {
@@ -99,34 +123,21 @@ describe("tui SessionView", () => {
     expect(scrolled).toContain("scrolled");
   });
 
-  it("renders error lines and the empty state", () => {
-    const err = renderToString(
-      <TranscriptView lines={[{ key: 1, role: "error", text: "boom" }]} />,
-    );
-    expect(err).toContain("boom");
-
+  it("shows the greeting until the conversation starts", () => {
     const empty = renderToString(<TranscriptView lines={[]} />);
     expect(empty).toContain("PgUp");
-  });
+    expect(empty).toContain("Dove");
 
-  it("renders chrome: header, status, queue, help, collapsed sidebar", () => {
-    expect(renderToString(<Header left="solo" right="abc" />)).toContain("sys");
-    expect(renderToString(<StatusBar left="a" right="b" />)).toContain("a");
-    expect(renderToString(<ShortcutsBar />)).toContain("Shift+Tab");
-    expect(renderToString(<QueuePane queue={["one", "two"]} />)).toContain("queued (2)");
-    expect(renderToString(<HelpOverlay />)).toContain("shortcuts");
-    const collapsed = renderToString(
-      <SideBar
-        mode="solo"
-        agents={[{ name: "a", lead: true, muted: false, stopped: false }]}
-        skills={[]}
-        sessionId="12345678-aaaa"
-        cost={0.5}
-        collapsed
-        queue={["q1"]}
-      />,
+    const infoOnly = renderToString(
+      <TranscriptView lines={[{ key: 1, role: "error", text: "boom" }]} />,
     );
-    expect(collapsed).toContain("⏳1");
+    expect(infoOnly).toContain("boom");
+    expect(infoOnly).toContain("Dove");
+
+    const talking = renderToString(
+      <TranscriptView lines={[{ key: 1, role: "user", text: "hi" }]} />,
+    );
+    expect(talking).not.toContain("Dove");
   });
 
   it("measures rows with wrapping and always shows a tall entry", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchRouting } from "@/domain/routing.js";
+import { isCliSourced, matchRouting, routeFor } from "@/domain/routing.js";
 import type { RoutingRule } from "@/domain/models.js";
 
 const RULES: RoutingRule[] = [
@@ -63,5 +63,28 @@ describe("routing", () => {
 
     expect(matchRouting(rules, "model-a").command).toBe("m");
     expect(matchRouting(rules, "model-ab").command).toBe("opencode");
+  });
+
+  it("runs a CLI-listed model through the CLI that listed it", () => {
+    const viaAgy = routeFor(RULES, "anthropic/claude-opus-4-6-thinking", "agy");
+
+    expect(viaAgy.command).toBe("agy");
+    expect(viaAgy.args).toEqual(["--dangerously-skip-permissions"]);
+    expect(routeFor(RULES, "anthropic/claude-sonnet-4-5", "opencode").command).toBe("opencode");
+  });
+
+  it("routes registry and API-discovered models by pattern as before", () => {
+    expect(routeFor(RULES, "anthropic/claude-sonnet", "registry").command).toBe("claude");
+    expect(routeFor(RULES, "ollama/llama3", "ollama").command).toBe("opencode");
+    expect(routeFor(RULES, "anthropic/claude-sonnet").command).toBe("claude");
+  });
+
+  it("synthesizes a route when the listing CLI has no rule", () => {
+    expect(routeFor([], "google/gemini-3.8-flash-high", "agy")).toMatchObject({
+      driver: "cli",
+      command: "agy",
+    });
+    expect(isCliSourced("agy")).toBe(true);
+    expect(isCliSourced("openrouter")).toBe(false);
   });
 });

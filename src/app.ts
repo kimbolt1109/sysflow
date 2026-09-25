@@ -18,7 +18,7 @@ import { takeCheckpoint as takeCheckpointData } from "@/domain/checkpoints.js";
 import type { PermissionRule } from "@/domain/permissions.js";
 import { budgetLevel, costFor, type BudgetLevel } from "@/domain/quota.js";
 import { findModel } from "@/domain/modelRegistry.js";
-import { matchRouting } from "@/domain/routing.js";
+import { isCliSourced, routeFor } from "@/domain/routing.js";
 import type { SkillDef } from "@/domain/skills.js";
 import { thinkingDirective, type ThinkingLevel } from "@/domain/thinking.js";
 import { extractLessons, lessonsContext } from "@/domain/learnings.js";
@@ -33,7 +33,8 @@ import {
   saveCheckpoint,
   snapshotWorkspace as takeWorkspaceSnapshot,
 } from "@/infrastructure/checkpointStore.js";
-import { CliDriver, cliVersion, findOnPath } from "@/infrastructure/cliDrivers.js";
+import { CliDriver } from "@/infrastructure/cliDrivers.js";
+import { cliVersion, findOnPath } from "@/infrastructure/cliLaunch.js";
 import { discoverCommands } from "@/infrastructure/commandStore.js";
 import {
   cacheIsFresh,
@@ -178,21 +179,21 @@ export function cliDriverFor(
   config: Config,
   modelId?: string,
   models: ModelInfo[] = config.models,
+  thinking?: ThinkingLevel,
 ): Driver | undefined {
   const id = modelId ?? config.defaultModel;
-  const rule = matchRouting(config.routing, id);
-  if (
-    rule.driver === "cli" &&
-    rule.command !== undefined &&
-    findOnPath(rule.command) !== undefined
-  ) {
-    return new CliDriver(id, {
-      command: rule.command,
-      extraArgs: rule.args,
-      cliModel: models.find((m) => m.id === id)?.cliModel,
-    });
-  }
-  return undefined;
+  const model = models.find((m) => m.id === id);
+  const rule = routeFor(config.routing, id, model?.source);
+  if (rule.driver !== "cli" || rule.command === undefined) return undefined;
+  if (findOnPath(rule.command) === undefined) return undefined;
+  return new CliDriver(id, {
+    command: rule.command,
+    extraArgs: rule.args,
+    // opencode lists and selects models by their full provider/model id
+    cliModel: model?.cliModel ?? (model?.source === "opencode" ? id : undefined),
+    timeoutMs: config.cliTimeoutMs,
+    effort: thinking,
+  });
 }
 
 export function createDriverFor(
@@ -200,23 +201,17 @@ export function createDriverFor(
   modelId: string,
   fetchFn?: typeof fetch,
   models: ModelInfo[] = config.models,
+  thinking?: ThinkingLevel,
 ): Driver {
-  const scoped: Config = { ...config, defaultModel: modelId };
-  const native = nativeDriverFor(scoped, fetchFn);
-  if (native !== undefined) return native;
-  const rule = matchRouting(config.routing, modelId);
-  if (
-    rule.driver === "cli" &&
-    rule.command !== undefined &&
-    findOnPath(rule.command) !== undefined
-  ) {
-    return new CliDriver(modelId, {
-      command: rule.command,
-      extraArgs: rule.args,
-      cliModel: models.find((m) => m.id === modelId)?.cliModel,
-    });
+  // A CLI-listed id (agy's "gemini-3.8-flash-high") is not an API model name.
+  if (!isCliSourced(models.find((m) => m.id === modelId)?.source)) {
+    const native = nativeDriverFor({ ...config, defaultModel: modelId }, fetchFn);
+    if (native !== undefined) return native;
   }
-  return new MockDriver(`${modelId} (mock: no key and no CLI found)`);
+  return (
+    cliDriverFor(config, modelId, models, thinking) ??
+    new MockDriver(`${modelId} (mock: no key and no CLI found)`)
+  );
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
@@ -276,31 +271,37 @@ export function createDriverAgents(
         .fire("PostToolUse", { tool_name: name, tool_input: input, output: output.slice(0, 2000) })
         .then(() => undefined),
   };
-  return modelIds.map(
-    (id) =>
-      new DriverAgent(
-        id,
-        createDriverFor(app.config, id, undefined, app.models),
-        app.tools,
-        check,
-        {
-          contextPrefix: fullPrefix,
-          subagents: app.subagents,
-          skillBody: (name) => {
-            const def = app.skills.find((s) => s.name === name);
-            if (def?.disableModelInvocation === true) return undefined;
-            return app.skillBody(name);
-          },
-          onQuestion: async (question, options) =>
-            app.askUser !== undefined
-              ? app.askUser(question, options)
-              : "question unavailable (non-interactive session)",
-          mcp: app.mcp,
-          layaUrl: app.config.layaUrl,
-          hooks,
-        },
-      ),
-  );
+  return modelIds.map((id) => {
+    if (findModel(app.models, id) === undefined) {
+      process.stderr.write(
+        `[warn] unknown model "${id}" (not in registry or discovery output) — ` +
+          `run "sys models --refresh" to update the list.\n`,
+      );
+    }
+    const driver = createDriverFor(app.config, id, undefined, app.models, thinking);
+    if (driver.id.includes("(mock:")) {
+      process.stderr.write(
+        `[warn] "${id}" resolved to a mock driver (${driver.id}) — it echoes prompts and does no work. ` +
+          `Set a provider key or install the routed CLI.\n`,
+      );
+    }
+    return new DriverAgent(id, driver, app.tools, check, {
+      contextPrefix: fullPrefix,
+      subagents: app.subagents,
+      skillBody: (name) => {
+        const def = app.skills.find((s) => s.name === name);
+        if (def?.disableModelInvocation === true) return undefined;
+        return app.skillBody(name);
+      },
+      onQuestion: async (question, options) =>
+        app.askUser !== undefined
+          ? app.askUser(question, options)
+          : "question unavailable (non-interactive session)",
+      mcp: app.mcp,
+      layaUrl: app.config.layaUrl,
+      hooks,
+    });
+  });
 }
 
 export function createApp(
@@ -312,9 +313,7 @@ export function createApp(
   const initialModels = mergeModels(config.models, cached !== undefined ? cached.models : []);
   const driver =
     overrides.driver ??
-    nativeDriverFor(config, overrides.fetchFn) ??
-    cliDriverFor(config, undefined, initialModels) ??
-    new MockDriver(`${config.defaultModel} (mock: no key and no CLI found)`);
+    createDriverFor(config, config.defaultModel, overrides.fetchFn, initialModels);
   const tools = new LocalTools(config.projectDir);
   const sessions = new SessionStore(config.dataDir, config.projectDir);
   const hooks = new HookRunner(loadHooks(config.dataDir, config.projectDir));
@@ -358,7 +357,12 @@ export function createApp(
           }),
           15000,
         )) ?? [];
-      if (live.length > 0) {
+      if (live.length === 0) {
+        process.stderr.write(
+          `[warn] model discovery returned nothing (offline or timed out after 15s); ` +
+            `using ${models.length} registry/cached models.\n`,
+        );
+      } else {
         saveDiscoveryCache(config.dataDir, live);
       }
       const fresh = loadDiscoveryCache(config.dataDir);

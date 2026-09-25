@@ -172,4 +172,215 @@ describe("orchestrator", () => {
     expect(pickMode(100, 5, 2)).toBe("workers");
     expect(pickMode(100, 1, 2)).toBe("relay");
   });
+
+  it("drops an agent whose draft fails and carries on without it", async () => {
+    class FlakyAgent extends ScriptAgent {
+      override async draft(): Promise<string> {
+        throw new Error("agy timed out after 120s");
+      }
+    }
+    const events: CouncilEvent[] = [];
+    const agents = [new ScriptAgent("a", "plan A", 9), new FlakyAgent("flaky", "never", 5)];
+
+    const staged = await planCouncil(agents, "task", { emit: (e) => events.push(e) });
+
+    expect(staged.live.map((a) => a.name)).toEqual(["a"]);
+    expect(staged.lead).toBe("a");
+    const dropped = events.find((e) => e.agent === "flaky");
+    expect(dropped?.message).toContain("dropped out");
+    expect(dropped?.message).toContain("agy timed out");
+  });
+
+  it("fails only when every agent fails to draft, naming each", async () => {
+    class FlakyAgent extends ScriptAgent {
+      override async draft(): Promise<string> {
+        throw new Error(`${this.name} timed out`);
+      }
+    }
+    const agents = [new FlakyAgent("x", "", 5), new FlakyAgent("y", "", 5)];
+
+    await expect(planCouncil(agents, "task")).rejects.toThrow(/every agent failed to draft.*x.*y/);
+  });
+
+  it("skips a failed critique without losing the run", async () => {
+    class GrumpyAgent extends ScriptAgent {
+      override async critique(): Promise<Record<string, { score: number; note: string }>> {
+        throw new Error("boom");
+      }
+    }
+    const events: CouncilEvent[] = [];
+    const agents = [new ScriptAgent("a", "plan A", 9), new GrumpyAgent("grumpy", "plan G", 5)];
+
+    const staged = await planCouncil(agents, "task", { emit: (e) => events.push(e) });
+
+    expect(staged.plan).toContain("merged");
+    expect(events.find((e) => e.agent === "grumpy" && e.phase === "DEBATE")?.message).toContain(
+      "skipped critique round 1",
+    );
+  });
+
+  it("keeps the lead's own draft when synthesis fails", async () => {
+    class NoMergeAgent extends ScriptAgent {
+      override async synthesize(): Promise<string> {
+        throw new Error("timed out");
+      }
+    }
+    const agents = [new NoMergeAgent("lead", "the lead plan", 9), new ScriptAgent("b", "B", 1)];
+
+    const staged = await planCouncil(agents, "task", { preferredLead: "lead" });
+
+    expect(staged.plan).toBe("the lead plan");
+  });
+
+  it("previews drafts and scores in emitted events", async () => {
+    const events: CouncilEvent[] = [];
+    const agents = [new ScriptAgent("a", "plan A in detail", 9), new ScriptAgent("b", "plan B", 6)];
+
+    await planCouncil(agents, "ship it", { emit: (e) => events.push(e) });
+
+    const drafts = events.filter((e) => e.phase === "PLANNING" && e.agent !== undefined);
+    expect(drafts).toHaveLength(2);
+    expect(drafts.map((d) => d.message).join(" ")).toContain("plan A in detail");
+    const debates = events.filter((e) => e.phase === "DEBATE");
+    expect(debates.map((d) => d.message).join(" ")).toMatch(/a=\d/);
+    const synthesis = events.find((e) => e.phase === "SYNTHESIS");
+    expect(synthesis?.message).toContain("merged");
+  });
+
+  it("names the lead when execution fails", async () => {
+    class ExplodingAgent extends ScriptAgent {
+      override async execute(): Promise<ExecuteOutcome> {
+        throw new Error("agy timed out after 120s");
+      }
+    }
+    const agents = [new ExplodingAgent("lead", "plan", 9), new ScriptAgent("b", "plan B", 1)];
+
+    await expect(runCouncil(agents, "task", { preferredLead: "lead" })).rejects.toThrow(
+      "execution failed for lead",
+    );
+  });
+
+  it("skips a grader that errors and still finishes", async () => {
+    class FlakyVerifyAgent extends ScriptAgent {
+      override async verify(): Promise<VerifyVerdict> {
+        throw new Error("boom");
+      }
+    }
+    const events: CouncilEvent[] = [];
+    const agents = [new FlakyVerifyAgent("v", "plan", 9), new ScriptAgent("b", "plan B", 9)];
+
+    const result = await runCouncil(agents, "task", {
+      preferredLead: "b",
+      emit: (e) => events.push(e),
+    });
+
+    expect(result.pausedForUser).toBe(false);
+    expect(result.verify.map((v) => v.agent)).toEqual(["b"]);
+    expect(events.find((e) => e.agent === "v" && e.phase === "VERIFY")?.message).toContain(
+      "could not grade",
+    );
+  });
+
+  it("leaves unscored verdicts out of the average instead of counting them as 50%", async () => {
+    class MumblingAgent extends ScriptAgent {
+      override async verify(): Promise<VerifyVerdict> {
+        return { score: 0, passed: true, notes: "no score returned", checks: [], unscored: true };
+      }
+    }
+    const agents = [new MumblingAgent("m", "plan", 9), new ScriptAgent("b", "plan B", 9)];
+
+    const result = await runCouncil(agents, "task", { preferredLead: "b" });
+
+    expect(result.pausedForUser).toBe(false);
+    expect(result.verify.find((v) => v.agent === "m")?.unscored).toBe(true);
+  });
+
+  it("hands an all-unscored verification to the reviewers", async () => {
+    class MumblingAgent extends ScriptAgent {
+      override async verify(): Promise<VerifyVerdict> {
+        return { score: 0, passed: true, notes: "no score returned", checks: [], unscored: true };
+      }
+    }
+    const events: CouncilEvent[] = [];
+    const agents = [new MumblingAgent("a", "plan A", 9), new MumblingAgent("b", "plan B", 9)];
+
+    const result = await runCouncil(agents, "task", { emit: (e) => events.push(e) });
+
+    expect(result.pausedForUser).toBe(false);
+    expect(events.some((e) => e.message.startsWith("inconclusive"))).toBe(true);
+    expect(events.some((e) => e.phase === "REVIEW")).toBe(true);
+  });
+
+  it("treats a reviewer that errors as an abstention", async () => {
+    class BrokenReviewer extends ScriptAgent {
+      override async review(): Promise<Review> {
+        throw new Error("timed out");
+      }
+    }
+    const events: CouncilEvent[] = [];
+    const agents = [new ScriptAgent("a", "plan A", 9), new BrokenReviewer("r", "plan R", 1)];
+
+    const result = await runCouncil(agents, "task", {
+      preferredLead: "a",
+      emit: (e) => events.push(e),
+    });
+
+    expect(result.pausedForUser).toBe(false);
+    expect(events.find((e) => e.agent === "r" && e.phase === "REVIEW")?.message).toContain(
+      "abstained",
+    );
+  });
+
+  it("keeps the finished run when a retro fails", async () => {
+    class NoRetroAgent extends ScriptAgent {
+      override async retro(): Promise<string> {
+        throw new Error("tired");
+      }
+    }
+    const agents = [new NoRetroAgent("a", "plan A", 9), new ScriptAgent("b", "plan B", 1)];
+
+    const result = await runCouncil(agents, "task", { preferredLead: "a" });
+
+    expect(result.pausedForUser).toBe(false);
+    expect(result.retros.a).toContain("no retro");
+  });
+
+  it("names the agent when its relay turn fails", async () => {
+    class ExplodingAgent extends ScriptAgent {
+      override async execute(): Promise<ExecuteOutcome> {
+        throw new Error("boom");
+      }
+    }
+
+    await expect(
+      runRelay([new ScriptAgent("a", "A", 1), new ExplodingAgent("bad", "B", 1)], "task"),
+    ).rejects.toThrow("relay turn failed for bad");
+  });
+
+  it("names the agent and subtask when a worker fails", async () => {
+    class ExplodingAgent extends ScriptAgent {
+      override async execute(): Promise<ExecuteOutcome> {
+        throw new Error("boom");
+      }
+    }
+
+    await expect(
+      runWorkers([new ExplodingAgent("w", "W", 1)], "task", [
+        { id: "s1", brief: "one", files: [] },
+      ]),
+    ).rejects.toThrow("worker failed for w on s1");
+  });
+
+  it("previews execution, verification, and retro in emitted events", async () => {
+    const events: CouncilEvent[] = [];
+    const agents = [new ScriptAgent("a", "plan A", 9), new ScriptAgent("b", "plan B", 9)];
+
+    await runCouncil(agents, "ship it", { emit: (e) => events.push(e) });
+
+    expect(
+      events.find((e) => e.phase === "EXECUTION" && e.message.startsWith("finished:")),
+    ).toBeDefined();
+    expect(events.find((e) => e.phase === "VERIFY")?.message).toMatch(/scored 90%/);
+    expect(events.find((e) => e.phase === "DONE")?.message).toContain("contributed");
+  });
 });

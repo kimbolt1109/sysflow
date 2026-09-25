@@ -20,6 +20,17 @@ export function insertText(edit: PromptEdit, text: string): PromptEdit {
   return { value, cursor: cursor + text.length };
 }
 
+/** Text from a paste (or any multi-character chunk): terminals send CR or CRLF line
+ * ends and may carry stray control bytes; keep newlines and tabs, drop the rest. */
+export function pastedText(chunk: string): string {
+  let out = "";
+  for (const ch of chunk.replace(/\r\n?/g, "\n")) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (ch === "\n" || ch === "\t" || (code >= 0x20 && code !== 0x7f)) out += ch;
+  }
+  return out;
+}
+
 export function eraseBackward(edit: PromptEdit): PromptEdit {
   const cursor = clampCursor(edit.value, edit.cursor);
   if (cursor === 0) return edit;

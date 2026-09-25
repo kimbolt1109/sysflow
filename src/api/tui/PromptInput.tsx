@@ -14,6 +14,7 @@ import {
   moveLineEnd,
   moveLineStart,
   moveLineVertical,
+  pastedText,
   type PromptEdit,
 } from "@/api/tui/promptState.js";
 
@@ -214,9 +215,10 @@ export function PromptInput({
       commit(killWordBackward(edit));
       return;
     }
-    if (input.length === 1 && !key.ctrl && !key.meta) {
-      commit(insertText(edit, input));
-    }
+    if (key.ctrl || key.meta || input === "") return;
+    // A multi-character chunk is a paste: it used to be dropped silently.
+    const text = input.length === 1 ? input : pastedText(input);
+    if (text !== "") commit(insertText(edit, text));
   });
 
   const lines = edit.value.split("\n");

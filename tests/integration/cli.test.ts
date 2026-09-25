@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseArgv } from "@/api/cli.js";
 import { formatHeadless, runHeadless } from "@/api/headless.js";
-import { createApp } from "@/app.js";
+import { createApp, createDriverAgents } from "@/app.js";
 import { loadConfig } from "@/config.js";
 import type { Driver } from "@/domain/drivers.js";
 import { matchRouting } from "@/domain/routing.js";
@@ -60,6 +60,30 @@ describe("cli integration", () => {
     const config = loadConfig({ APP_DATA_DIR: data, APP_LOG_LEVEL: "error" }, { cwd: proj });
 
     expect(matchRouting(config.routing, "google/gemini-pro").command).toBe("agy");
+  });
+
+  it("parses APP_CLI_TIMEOUT_MS with a 120s default", () => {
+    const def = loadConfig({ APP_DATA_DIR: data, APP_LOG_LEVEL: "error" }, { cwd: proj });
+
+    expect(def.cliTimeoutMs).toBe(120000);
+    const custom = loadConfig(
+      { APP_DATA_DIR: data, APP_LOG_LEVEL: "error", APP_CLI_TIMEOUT_MS: "5000" },
+      { cwd: proj },
+    );
+
+    expect(custom.cliTimeoutMs).toBe(5000);
+    expect(() =>
+      loadConfig({ APP_DATA_DIR: data, APP_CLI_TIMEOUT_MS: "0" }, { cwd: proj }),
+    ).toThrow("APP_CLI_TIMEOUT_MS");
+  });
+
+  it("still builds agents for unknown models (mock fallback with a warning)", () => {
+    const config = loadConfig({ APP_DATA_DIR: data, APP_LOG_LEVEL: "error" }, { cwd: proj });
+    const app = createApp(config);
+
+    const agents = createDriverAgents(app, ["nope/unknown-model"], () => "allow");
+
+    expect(agents).toHaveLength(1);
   });
 
   it("reads and writes files through app tools", async () => {

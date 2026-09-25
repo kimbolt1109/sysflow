@@ -1,7 +1,6 @@
 import { Box, Text } from "ink";
 import type { ReactElement } from "react";
 import { phaseLine } from "@/api/council.js";
-import type { OrchestrationMode } from "@/domain/models.js";
 import {
   capTranscript,
   sanitizeTranscriptText,
@@ -9,32 +8,16 @@ import {
   transcriptRowCounts,
 } from "@/domain/transcript.js";
 import { DOVE_ART, DOVE_BLUE, doveGreeting } from "@/api/tui/dove.js";
+import { MarkdownText } from "@/api/tui/MarkdownText.js";
+import { isFailedToolSummary } from "@/api/tui/toolLines.js";
 
 export interface TranscriptLine {
   key: number;
-  role: "user" | "assistant" | "info" | "diff" | "error";
+  /** "tool" text is "<name> <target>\n<result summary>" */
+  role: "user" | "assistant" | "tool" | "info" | "diff" | "error";
   text: string;
-  /** epoch ms; when present a dim HH:MM:SS prefix is shown */
+  /** epoch ms, kept for exports */
   at?: number;
-}
-
-export interface AgentBadge {
-  name: string;
-  lead: boolean;
-  muted: boolean;
-  stopped: boolean;
-}
-
-export interface SideBarProps {
-  mode: OrchestrationMode;
-  agents: AgentBadge[];
-  skills: string[];
-  sessionId: string;
-  cost: number;
-  collapsed?: boolean;
-  queue?: string[];
-  contextPct?: number;
-  runningLabel?: string;
 }
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
@@ -43,20 +26,34 @@ const PHASE = /^[─—―]+\s*(.+?)\s*[─—―]+\s*(?:\[(.*?)\]\s*)?(.*)$/;
 interface FoldGroup {
   key: number;
   phase: string;
-  message: string;
+  verb: string;
   agents: string[];
+  details: Array<[string, string]>;
 }
 
+function splitMessage(message: string): { verb: string; detail: string } {
+  const sep = message.indexOf(": ");
+  return sep < 0
+    ? { verb: message, detail: "" }
+    : { verb: message.slice(0, sep), detail: message.slice(sep + 2) };
+}
+
+/** Folds consecutive council events that share a phase and verb into one entry:
+ * "PLANNING drafted an approach — a, b", with each agent's preview underneath. */
 export function foldInfoLines(lines: TranscriptLine[]): TranscriptLine[] {
   const out: TranscriptLine[] = [];
   let group: FoldGroup | undefined;
   const flush = (): void => {
     if (group === undefined) return;
     const who = group.agents.length > 0 ? ` — ${summarizeAgents(group.agents)}` : "";
+    const details = group.details
+      .filter(([, d]) => d !== "")
+      .slice(0, 6)
+      .map(([agent, d]) => `  ${agent}: ${clip(d, 140)}`);
     out.push({
       key: group.key,
       role: "info",
-      text: `${phaseLine(group.phase)} ${group.message}${who}`,
+      text: [`${phaseLine(group.phase)} ${group.verb}${who}`, ...details].join("\n"),
     });
     group = undefined;
   };
@@ -72,36 +69,34 @@ export function foldInfoLines(lines: TranscriptLine[]): TranscriptLine[] {
       out.push(line);
       continue;
     }
-    const [, phase = "", agent = "", message = ""] = match;
-    if (
-      group !== undefined &&
-      group.phase === phase.trim() &&
-      group.message === message.trim() &&
-      agent.trim() !== ""
-    ) {
-      if (!group.agents.includes(agent.trim())) group.agents.push(agent.trim());
-      continue;
-    }
-    flush();
-    if (agent.trim() === "") {
+    const [, rawPhase = "", rawAgent = "", message = ""] = match;
+    const phase = rawPhase.trim();
+    const agent = rawAgent.trim();
+    const { verb, detail } = splitMessage(message.trim());
+    if (agent === "") {
+      flush();
       out.push(line);
       continue;
     }
-    group = { key: line.key, phase: phase.trim(), message: message.trim(), agents: [agent.trim()] };
+    if (group !== undefined && group.phase === phase && group.verb === verb) {
+      if (!group.agents.includes(agent)) group.agents.push(agent);
+      group.details.push([agent, detail]);
+      continue;
+    }
+    flush();
+    group = { key: line.key, phase, verb, agents: [agent], details: [[agent, detail]] };
   }
   flush();
   return out;
 }
 
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 function summarizeAgents(agents: string[]): string {
   if (agents.length <= 6) return agents.join(", ");
   return `${agents.slice(0, 6).join(", ")} +${agents.length - 6} more`;
-}
-
-function timestampOf(at: number): string {
-  const date = new Date(at);
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 export interface TranscriptViewProps {
@@ -114,7 +109,7 @@ export interface TranscriptViewProps {
   maxStored?: number;
   /** transcript-area columns for wrap estimation */
   width?: number;
-  /** case-insensitive substring highlighted in user/assistant/info/error lines */
+  /** case-insensitive substring highlighted in the transcript */
   highlight?: string;
 }
 
@@ -129,6 +124,44 @@ function Highlighted({ text, needle }: { text: string; needle: string }): ReactE
       </Text>
       {text.slice(at + needle.length)}
     </>
+  );
+}
+
+function Greeting(): ReactElement {
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      {DOVE_ART.map((line, i) => (
+        <Text key={i} color={DOVE_BLUE}>
+          {line}
+        </Text>
+      ))}
+      <Text bold>{doveGreeting()}</Text>
+      <Text dimColor>Type a task and press Enter · / for commands · PgUp scrolls back</Text>
+    </Box>
+  );
+}
+
+function ToolLine({ text, spaced }: { text: string; spaced: boolean }): ReactElement {
+  const [label = "", ...rest] = text.split("\n");
+  const space = label.indexOf(" ");
+  const name = space < 0 ? label : label.slice(0, space);
+  const target = space < 0 ? "" : label.slice(space);
+  const summary = rest.join(" ").trim();
+  const failed = isFailedToolSummary(summary);
+  return (
+    <Box flexDirection="column" marginTop={spaced ? 1 : 0}>
+      <Text wrap="truncate-end">
+        <Text color={failed ? "red" : "magenta"}>⏺ </Text>
+        <Text bold>{name}</Text>
+        {target}
+      </Text>
+      {summary !== "" && (
+        <Text color={failed ? "red" : undefined} dimColor={!failed} wrap="truncate-end">
+          {"  ⎿ "}
+          {summary}
+        </Text>
+      )}
+    </Box>
   );
 }
 
@@ -148,13 +181,14 @@ export function TranscriptView({
       ? { start: 0, end: clean.length, hiddenAboveRows: 0, hiddenBelowRows: 0, follow: true }
       : sliceByRows(counts, height, scrollOffset);
   const visible = clean.slice(view.start, view.end);
+  const conversing = clean.some((l) => l.role === "user" || l.role === "assistant");
 
   return (
     <Box flexDirection="column">
+      {!conversing && <Greeting />}
       {dropped > 0 && (
         <Text dimColor>
-          … {dropped} earlier {dropped === 1 ? "entry" : "entries"} trimmed (bigger window: raise
-          maxStored)
+          … {dropped} earlier {dropped === 1 ? "entry" : "entries"} trimmed
         </Text>
       )}
       {view.hiddenAboveRows > 0 && (
@@ -162,251 +196,61 @@ export function TranscriptView({
           ▲ ~{view.hiddenAboveRows} lines earlier · PgUp scrolls · PgDn jumps to live
         </Text>
       )}
-      {visible.length === 0 && (
-        <Box flexDirection="column" marginY={1}>
-          {DOVE_ART.map((line, i) => (
-            <Text key={i} color={DOVE_BLUE}>
-              {line}
-            </Text>
-          ))}
-          <Text bold>{doveGreeting()}</Text>
-          <Text dimColor>
-            Conversation stays here — PgUp scrolls back, PgDn returns to live output.
-          </Text>
-        </Box>
-      )}
-      {visible.map((line) => {
-        const stamp = line.at === undefined ? null : <Text dimColor>{timestampOf(line.at)} </Text>;
+      {visible.map((line, i) => {
         if (line.role === "user")
           return (
             <Box key={line.key} marginTop={1}>
               <Text bold color="cyan">
-                ❯{" "}
+                {"❯ "}
               </Text>
-              <Text bold color="cyan" wrap="wrap">
-                {stamp}
+              <Text bold wrap="wrap">
                 <Highlighted text={line.text} needle={highlight} />
               </Text>
             </Box>
           );
+        if (line.role === "assistant")
+          return (
+            <Box key={line.key} marginTop={1}>
+              <Text color="green">{"◆ "}</Text>
+              <Box flexDirection="column" flexGrow={1}>
+                <MarkdownText text={line.text} highlight={highlight} />
+              </Box>
+            </Box>
+          );
+        if (line.role === "tool")
+          return (
+            <ToolLine key={line.key} text={line.text} spaced={visible[i - 1]?.role === "user"} />
+          );
         if (line.role === "info")
           return (
             <Text key={line.key} dimColor wrap="wrap">
-              {stamp}· <Highlighted text={line.text} needle={highlight} />
+              {"· "}
+              <Highlighted text={line.text} needle={highlight} />
             </Text>
           );
         if (line.role === "error")
           return (
             <Text key={line.key} bold color="red" wrap="wrap">
-              {stamp}✖ <Highlighted text={line.text} needle={highlight} />
-            </Text>
-          );
-        if (line.role === "diff")
-          return (
-            <Text
-              key={line.key}
-              color={
-                line.text.startsWith("+") ? "green" : line.text.startsWith("-") ? "red" : undefined
-              }
-              dimColor={!line.text.startsWith("+") && !line.text.startsWith("-")}
-              wrap="wrap"
-            >
-              {line.text}
+              {"✖ "}
+              <Highlighted text={line.text} needle={highlight} />
             </Text>
           );
         return (
-          <Box key={line.key} marginTop={1}>
-            <Text bold color="green">
-              ◆{" "}
-            </Text>
-            <Text wrap="wrap">
-              {stamp}
-              <Highlighted text={line.text} needle={highlight} />
-            </Text>
-          </Box>
+          <Text
+            key={line.key}
+            color={
+              line.text.startsWith("+") ? "green" : line.text.startsWith("-") ? "red" : undefined
+            }
+            dimColor={!line.text.startsWith("+") && !line.text.startsWith("-")}
+            wrap="wrap"
+          >
+            {line.text}
+          </Text>
         );
       })}
       {!view.follow && (
         <Text dimColor>▼ scrolled · PgDn returns to live (~{view.hiddenBelowRows} below)</Text>
       )}
-    </Box>
-  );
-}
-
-function contextBar(pct: number): string {
-  const width = 10;
-  const filled = Math.max(0, Math.min(width, Math.round(pct * width)));
-  return `${"█".repeat(filled)}${"░".repeat(width - filled)} ${Math.round(pct * 100)}%`;
-}
-
-export function SideBar({
-  mode,
-  agents,
-  skills,
-  sessionId,
-  cost,
-  collapsed = false,
-  queue = [],
-  contextPct,
-  runningLabel,
-}: SideBarProps): ReactElement {
-  if (collapsed) {
-    return (
-      <Box borderStyle="single" borderColor="gray" marginLeft={1} paddingX={1}>
-        <Text dimColor>
-          ◆{agents.length} · ${cost.toFixed(4)}
-          {queue.length > 0 ? ` · ⏳${queue.length}` : ""}
-          {runningLabel !== undefined ? ` · ${runningLabel}` : ""}
-        </Text>
-      </Box>
-    );
-  }
-  return (
-    <Box
-      flexDirection="column"
-      width={42}
-      marginLeft={1}
-      borderStyle="single"
-      borderColor="gray"
-      paddingX={1}
-    >
-      <Text bold>agents · {mode}</Text>
-      {agents.map((a) => (
-        <Text key={a.name} dimColor={a.muted || a.stopped} wrap="truncate-middle">
-          {a.lead ? "◆" : "◇"} {a.name}
-          {a.muted ? " (muted)" : ""}
-          {a.stopped ? " (stopped)" : ""}
-        </Text>
-      ))}
-      {runningLabel !== undefined && (
-        <Box marginTop={1}>
-          <Text color="yellow">◎ {runningLabel}</Text>
-        </Box>
-      )}
-      {queue.length > 0 && (
-        <Box marginTop={1} flexDirection="column">
-          <Text bold>queue ({queue.length})</Text>
-          {queue.slice(0, 3).map((q, i) => (
-            <Text key={`${i}-${q.slice(0, 24)}`} dimColor wrap="truncate">
-              #{i + 1} {q.length > 48 ? `${q.slice(0, 48)}…` : q}
-            </Text>
-          ))}
-          {queue.length > 3 && <Text dimColor>+{queue.length - 3} more</Text>}
-        </Box>
-      )}
-      <Box marginTop={1}>
-        <Text bold>skills ({skills.length})</Text>
-      </Box>
-      {skills.slice(0, 8).map((s) => (
-        <Text key={s} dimColor wrap="truncate-middle">
-          /{s}
-        </Text>
-      ))}
-      <Box marginTop={1} flexDirection="column">
-        <Text dimColor>
-          {sessionId.slice(0, 8)} · ${cost.toFixed(4)}
-        </Text>
-        {contextPct !== undefined && <Text dimColor>ctx {contextBar(contextPct)}</Text>}
-      </Box>
-    </Box>
-  );
-}
-
-export interface HeaderProps {
-  left: string;
-  right?: string;
-  alert?: string;
-}
-
-export function Header({ left, right, alert }: HeaderProps): ReactElement {
-  return (
-    <Box>
-      <Text bold color="green">
-        ◆ sys
-      </Text>
-      <Text bold> · {left}</Text>
-      {right !== undefined && right !== "" && <Text dimColor> · {right}</Text>}
-      {alert !== undefined && alert !== "" && (
-        <Text bold color="red">
-          {" "}
-          · {alert}
-        </Text>
-      )}
-    </Box>
-  );
-}
-
-export interface StatusBarProps {
-  left: string;
-  right?: string;
-}
-
-export function StatusBar({ left, right }: StatusBarProps): ReactElement {
-  return (
-    <Box borderStyle="round" borderColor="gray" paddingX={1}>
-      <Text dimColor>
-        {left}
-        {right !== undefined && right !== "" ? ` · ${right}` : ""}
-      </Text>
-    </Box>
-  );
-}
-
-export function ShortcutsBar({ narrow = false }: { narrow?: boolean }): ReactElement {
-  return (
-    <Box>
-      <Text dimColor>
-        {narrow
-          ? "PgUp/Dn scroll · ↑↓ history · Esc Esc help · /exit quit"
-          : "PgUp/PgDn scroll · ↑↓ history · Tab accept · /find · /dump · Ctrl+B sidebar · Ctrl+S stash · Shift+Tab permit · Esc Esc help"}
-      </Text>
-    </Box>
-  );
-}
-
-export function QueuePane({ queue }: { queue: string[] }): ReactElement | null {
-  if (queue.length === 0) return null;
-  return (
-    <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="cyan" paddingX={1}>
-      <Text bold color="cyan">
-        ⏳ queued ({queue.length}) — runs in order after this turn
-      </Text>
-      {queue.slice(0, 3).map((q, i) => (
-        <Text key={`${i}-${q.slice(0, 24)}`} dimColor wrap="wrap">
-          #{i + 1} {q.length > 120 ? `${q.slice(0, 120)}…` : q}
-        </Text>
-      ))}
-      {queue.length > 3 && <Text dimColor>+{queue.length - 3} more</Text>}
-    </Box>
-  );
-}
-
-const HELP_ROWS: Array<[string, string]> = [
-  ["PgUp / PgDn", "scroll conversation, PgDn returns to live"],
-  ["Ctrl+B", "collapse / expand the sidebar"],
-  ["Ctrl+S", "stash the draft, press again to restore"],
-  ["Shift+Tab", "cycle permission mode"],
-  ["/ menu", "↑↓ browse · Tab accept · Enter sends (accepts while browsing)"],
-  ["Up / Down", "command history, or move between lines in multiline input"],
-  ["\\ + Enter", "newline instead of sending"],
-  ["/find text", "search the transcript, repeat /find to cycle matches"],
-  ["/dump [path]", "save the transcript to a markdown file"],
-  ["Esc Esc", "toggle this help (when the input is empty)"],
-  ["/exit", "quit the session"],
-];
-
-export function HelpOverlay(): ReactElement {
-  return (
-    <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="green" paddingX={1}>
-      <Text bold color="green">
-        ? shortcuts
-      </Text>
-      {HELP_ROWS.map(([keys, what]) => (
-        <Text key={keys}>
-          <Text bold>{keys}</Text>
-          <Text dimColor> — {what}</Text>
-        </Text>
-      ))}
     </Box>
   );
 }

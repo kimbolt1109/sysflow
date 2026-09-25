@@ -73,8 +73,73 @@ describe("driverAgent", () => {
     ).toEqual({ score: 82, passed: true, notes: "good", checks: ["t1"] });
   });
 
-  it("falls back on non-JSON verify replies", () => {
-    expect(parseVerifyVerdict("looks fine")).toMatchObject({ score: 50, passed: true, checks: [] });
+  it("marks non-JSON verify replies unscored instead of inventing 50%", () => {
+    expect(parseVerifyVerdict("looks fine")).toMatchObject({
+      unscored: true,
+      passed: true,
+      checks: [],
+      notes: expect.stringContaining("looks fine"),
+    });
+    expect(parseVerifyVerdict('{"notes": "no number here"}').unscored).toBe(true);
+  });
+
+  it("runs planning, critique, and grading read-only; execution may write", async () => {
+    const seen: Array<boolean | undefined> = [];
+    class RecordingDriver extends MockDriver {
+      constructor(private readonly script: string[]) {
+        super("mock/recording");
+      }
+      override async sendMessage(
+        _messages?: unknown,
+        opts?: { readOnly?: boolean },
+      ): Promise<{ text: string; usage: { input: number; output: number } }> {
+        seen.push(opts?.readOnly);
+        return { text: this.script.shift() ?? "done", usage: { input: 1, output: 1 } };
+      }
+      override async streamMessage(
+        _messages: Parameters<MockDriver["streamMessage"]>[0],
+        onToken: (token: string) => void,
+        opts?: { readOnly?: boolean },
+      ): Promise<{ text: string; usage: { input: number; output: number } }> {
+        seen.push(opts?.readOnly);
+        const text = this.script.shift() ?? "done";
+        onToken(text);
+        return { text, usage: { input: 1, output: 1 } };
+      }
+    }
+    await withTools(async (dir) => {
+      const agent = new DriverAgent(
+        "a",
+        new RecordingDriver(["plan", "{}", "merged", "did it", "APPROVE", '{"score": 90}']),
+        new LocalTools(dir),
+        () => "allow",
+      );
+      await agent.draft("t");
+      await agent.critique("t", [{ agent: "b", plan: "p" }]);
+      await agent.synthesize("t", [], []);
+      const readOnlyPhases = seen.splice(0);
+      await agent.execute("plan");
+      const executePhase = seen.splice(0);
+      await agent.review("plan", { summary: "s", filesChanged: [] });
+      await agent.verify("plan", { summary: "s", filesChanged: [] }, "correctness");
+
+      expect(readOnlyPhases).toEqual([true, true, true]);
+      expect(executePhase).toEqual([undefined]);
+      expect(seen).toEqual([true, true]);
+    });
+  });
+
+  it("accepts dressed-up approvals from CLI models", async () => {
+    await withTools(async (dir) => {
+      const agent = new DriverAgent(
+        "a",
+        new ScriptDriver(["**APPROVE** — tests pass"]),
+        new LocalTools(dir),
+        () => "allow",
+      );
+
+      expect((await agent.review("p", { summary: "s", filesChanged: [] })).approved).toBe(true);
+    });
   });
 
   it("strips pages to readable text", () => {
