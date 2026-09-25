@@ -43,6 +43,8 @@ describe("cliDrivers", () => {
     expect(headlessArgs("codex", "hi", []).slice(0, 2)).toEqual(["exec", "--json"]);
     expect(cliDialect("C:\\Users\\me\\AppData\\Local\\agy\\bin\\agy.exe")).toBe("agy");
     expect(cliDialect("claude")).toBe("claude");
+    expect(cliDialect("/usr/local/bin/grok")).toBe("grok");
+    expect(cliDialect("C:\\npm\\opencode.CMD")).toBe("opencode");
   });
 
   it("sends agy prompts over stdin as stream-json, never argv", () => {
